@@ -8,7 +8,7 @@ A simple atmospheric pressure logger built with **Rust**, running on **ESP32-C3*
 - 🦀 Written in **Rust** for safety and performance  
 - ⚡ Runs on **ESP32-C3** microcontroller  
 - 🔌 Uses [**esp-hal**](https://github.com/esp-rs/esp-hal) for hardware abstraction  
-- 🌡️ Supports sensors like **BMP390** via [**bmp390-rs**](https://github.com/yourname/bmp390-rs)  
+- 🌡️ Supports sensors like **BMP390** via [**bmp390-rs**](https://github.com/EmilNorden/bmp390-rs)  
 - ⏱️ Configurable sampling interval (from seconds to hours)  
 - 💾 Stores data to a **remote server via Wi-Fi**  
 - 🌐 Syncs time using **NTP**
@@ -19,7 +19,7 @@ A simple atmospheric pressure logger built with **Rust**, running on **ESP32-C3*
 
 This project wouldn’t be possible without these fantastic open-source libraries:
 
-- [**bmp390-rs**](https://github.com/yourname/bmp390-rs) – sensor driver support
+- [**bmp390-rs**](https://github.com/EmilNorden/bmp390-rs) – sensor driver support
 - [**sntpc**](https://crates.io/crates/sntpc) – SNTP client for time synchronization  
 - [**esp-hal**](https://github.com/esp-rs/esp-hal) – an amazing ESP32 hardware abstraction layer
 - [**embassy**](https://github.com/embassy-rs/embassy) – Asynchronous embedded framework  
