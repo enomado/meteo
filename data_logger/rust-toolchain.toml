@@ -1,0 +1,9 @@
+[toolchain]
+channel = "nightly"
+# channel = "stable"
+# rustup toolchain install nightly-2025-06-01
+# channel = "nightly-2025-06-01"
+# channel = "nightly-2025-02-21"
+# channel = "nightly-2024-09-29"
+# channel = "nightly-2024-03-14"
+# channel = "nightly-2024-01-22"

@@ -1,0 +1,178 @@
+[package]
+edition = "2024"
+name = "meteo"
+# rust-version = "1.89"
+version = "0.1.0"
+
+[[bin]]
+name = "meteo"
+path = "./src/bin/main.rs"
+
+[dependencies]
+cfg-if = { version = "*" }
+static_cell = { version = "*", features = [] }
+
+bmp390-rs = { version = "*" }
+
+heapless = { version = "*", features = ["portable-atomic"] }
+serde = { version = "*", default-features = false, features = ["derive"] }
+postcard = { version = "*" }
+aes-gcm = { version = "*", default-features = false, features = [
+  #
+  "aes",
+  "alloc",
+  "rand_core",
+  "heapless",
+] }
+
+
+sntpc = { version = "*", default-features = false, features = [
+  "defmt",
+  "log",
+  "embassy-socket",
+] }
+
+embedded-hal-bus = { version = "*" }
+embedded-nal = { version = "*" }
+embedded-io = { version = "0.6.1", features = [
+  # 
+  # "defmt-03",
+] }
+embedded-io-async = { version = "0.6.1", features = [
+  # 
+  # "defmt-03",
+] }
+
+
+defmt = { version = "*", features = [] }
+defmt-rtt = { version = "*", features = [] }
+
+
+# package = "esp32c3-hal"
+esp-hal = { git = "https://github.com/esp-rs/esp-hal", branch = "main", features = [
+  "rt",
+  "defmt",
+  "esp32c3",
+  "unstable",
+] }
+
+esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", branch = "main", features = [
+  # "defmt",
+  "esp32c3",
+] }
+
+esp-sync = { git = "https://github.com/esp-rs/esp-hal", package = "esp-sync", branch = "main", features = [
+  # "defmt",
+  "esp32c3",
+] }
+
+
+esp-bootloader-esp-idf = { git = "https://github.com/esp-rs/esp-hal", package = "esp-bootloader-esp-idf", branch = "main", features = [
+  "esp32c3",
+] }
+
+
+# esp-radio is wsp-wifi
+esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", branch = "main", features = [
+  # "builtin-scheduler",
+  "unstable",
+  "defmt",
+  "esp-alloc",
+  "esp32c3",
+  "smoltcp",
+  "wifi",
+] }
+
+esp-preempt = { git = "https://github.com/esp-rs/esp-hal", package = "esp-preempt", branch = "main", features = [
+  "esp32c3",
+] }
+
+esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", branch = "main", features = [
+  "esp32c3",
+  # "log-04",
+  "defmt-espflash",
+  # "critical-section",
+] }
+
+esp-backtrace = { git = "https://github.com/esp-rs/esp-hal", package = "esp-backtrace", branch = "main", features = [
+  # "defmt",
+  "println",
+  # "exception-handler",
+  "panic-handler",
+  # "semihosting",
+  "esp32c3",
+] }
+
+embassy-sync = { version = "*" }
+embassy-embedded-hal = { version = "*" }
+embassy-executor = { version = "0.9", features = [
+  # "defmt",
+  # "task-arena-size-20480",
+] }
+
+embassy-net = { version = "0.7.0", features = [
+  "defmt",
+  "dhcpv4",
+  "medium-ethernet",
+  "tcp",
+  "udp",
+  "dns",
+] }
+
+
+# critical-section = "1.2.0"
+
+
+# for more networking protocol support see https://crates.io/crates/edge-net
+embassy-time = { version = "0.5.0", features = [
+  # 
+  # "defmt",
+] }
+
+esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal-embassy", branch = "main", features = [
+  # "defmt",
+  "esp32c3",
+] }
+
+
+smoltcp = { version = "0.12.0", default-features = false, features = [
+  # "defmt",
+  "medium-ethernet",
+  "multicast",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-ipv4",
+  "socket-dns",
+  "socket-icmp",
+  "socket-raw",
+  "socket-tcp",
+  "socket-udp",
+] }
+
+
+[build-dependencies]
+toml = "*"
+
+
+[features]
+esp32c3 = [
+  "esp-backtrace/esp32c3",
+  "esp-println/esp32c3",
+  "esp-bootloader-esp-idf/esp32c3",
+  "esp-hal-embassy/esp32c3",
+  "esp-hal/esp32c3",
+]
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
+debug = 2
+debug-assertions = false
+incremental = false
+lto = 'fat'
+opt-level = 's'
+overflow-checks = false

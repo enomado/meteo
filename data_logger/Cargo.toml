@@ -1,0 +1,21 @@
+[package]
+name = "back"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { version = "*" }
+serde = { version = "*" }
+chrono = { version = "*", features = ["serde"] }
+itertools = { version = "*" }
+
+tokio = { version = "*", features = ["full"] }
+axum = { version = "*" }
+
+postcard = { version = "*" }
+aes-gcm = { version = "*" }
+
+
+tokio-postgres = { version = "*" }
+
+postgres-types = { version = "*", features = ["derive", "with-chrono-0_4"] }

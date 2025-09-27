@@ -1,0 +1,50 @@
+[target.riscv32imc-unknown-none-elf]
+# runner = "espflash flash --monitor --chip esp32c3 --log-format defmt"
+runner = "espflash flash --monitor --chip esp32c3"
+
+[env]
+DEFMT_LOG = "info"
+
+[build]
+rustflags = [
+
+  "-C",
+  "link-arg=-Tlinkall.x",
+  "-C",
+  "link-arg=-Tdefmt.x",
+
+
+  # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
+  # NOTE: May negatively impact performance of produced code
+  "-C",
+  "force-frame-pointers",
+
+
+  # until nightly
+  # "-Z",
+  #"stack-protector=all",
+]
+
+
+# [target.'cfg(target_arch = "xtensa")']
+# runner = "espflash flash --monitor"
+# rustflags = [
+#   # GNU LD
+#   "-C",
+#   "link-arg=-Wl,-Tlinkall.x",
+#   "-C",
+#   "link-arg=-Tdefmt.x",
+#   "-C",
+#   "link-arg=-nostartfiles",
+
+#   # LLD
+#   # "-C", "link-arg=-Tlinkall.x",
+#   # "-C", "linker=rust-lld",
+# ]
+
+
+target = "riscv32imc-unknown-none-elf"
+
+
+[unstable]
+build-std = ["alloc", "core"]

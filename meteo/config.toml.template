@@ -1,0 +1,6 @@
+[firmware]
+wifi_ssid = "network"
+wifi_passwd = "brrrbrrr"
+secret_key = "737b706a727325657266746b65792131" # hex string 16 байт = 128 бит
+server_ip = "1.1.1.1"
+server_port = 1234
