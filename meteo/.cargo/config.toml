@@ -5,13 +5,26 @@ runner = "espflash flash --monitor --chip esp32c3"
 [env]
 DEFMT_LOG = "info"
 
+# order for debug: Tlinkall Tdefmt
+# makes esphlash happy. Fixes this error:
+# Error: espflash::monitor::defmt::table_parse_failed
+#   × failed to demangle defmt symbol `__global_pointer$`: expected value at line
+#   │ 1 column 1
+#   ╰─▶ Failed to parse defmt data
+
+# order for life:  Tdefmt Tlinkall
+# in opposite order freezes sometimes it no debugger attached.
+# push hard reset and see freeze to reproduce
+
 [build]
 rustflags = [
 
   "-C",
-  "link-arg=-Tlinkall.x",
-  "-C",
   "link-arg=-Tdefmt.x",
+
+
+  "-C",
+  "link-arg=-Tlinkall.x",
 
 
   # Required to obtain backtraces (e.g. when using the "esp-backtrace" crate.)
