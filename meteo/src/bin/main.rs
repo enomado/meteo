@@ -42,9 +42,12 @@ use meteo::{
     sensor::sensor_loop_new,
 };
 
+use embassy_executor::raw::Executor;
+use esp_rtos;
+
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     // defmt::init?
     // esp_println::logger::init_logger_from_env();
@@ -59,7 +62,7 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
     let software_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_preempt::start(timg0.timer0, software_interrupt.software_interrupt0);
+    esp_rtos::start(timg0.timer0, software_interrupt.software_interrupt0);
 
     // peripherals.RNG
     let mut rng = Rng::new();
@@ -79,7 +82,7 @@ async fn main(spawner: Spawner) -> ! {
     {
         use esp_hal::timer::systimer::SystemTimer;
         let systimer = SystemTimer::new(peripherals.SYSTIMER);
-        esp_hal_embassy::init(systimer.alarm0);
+        // esp_rtos::start(systimer.alarm0);
     }
 
     let config = embassy_net::Config::dhcpv4(Default::default());

@@ -83,9 +83,10 @@ esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", 
   "wifi",
 ] }
 
-esp-preempt = { git = "https://github.com/esp-rs/esp-hal", package = "esp-preempt", branch = "main", features = [
-  "esp32c3",
-] }
+# esp-preempt = { git = "https://github.com/esp-rs/esp-hal", package = "esp-preempt", branch = "main", features = [
+#   "esp32c3",
+# ] }
+
 
 esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", branch = "main", features = [
   "esp32c3",
@@ -129,9 +130,16 @@ embassy-time = { version = "0.5.0", features = [
   # "defmt",
 ] }
 
-esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal-embassy", branch = "main", features = [
+# esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal-embassy", branch = "main", features = [
+#   # "defmt",
+#   "esp32c3",
+# ] }
+
+
+esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", branch = "main", features = [
   # "defmt",
   "esp32c3",
+  "embassy",
 ] }
 
 
@@ -159,7 +167,7 @@ esp32c3 = [
   "esp-backtrace/esp32c3",
   "esp-println/esp32c3",
   "esp-bootloader-esp-idf/esp32c3",
-  "esp-hal-embassy/esp32c3",
+  # "esp-hal-embassy/esp32c3",
   "esp-hal/esp32c3",
 ]
 
