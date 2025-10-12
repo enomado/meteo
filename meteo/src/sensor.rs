@@ -93,13 +93,13 @@ pub async fn sensor_loop_new() {
 
     let p = barometer.max_measurement_time_us();
 
-    println!("time is: {}", p);
-
     let _data = barometer.read_sensor_data().await.unwrap();
 
     let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
 
     ntp_ready_receiver.changed_and(|s| *s == true).await;
+
+    println!("time is: {}", p);
 
     loop {
         let status2 = barometer.read::<IntStatus>().await.unwrap();
