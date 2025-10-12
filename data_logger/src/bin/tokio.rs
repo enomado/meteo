@@ -1,5 +1,5 @@
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
-use anyhow::Context;
+use anyhow::{Context, bail};
 use chrono::{DateTime, Local, TimeZone, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,11 @@ async fn read_packet(
     let mut len_buf = [0u8; 4];
     socket.read_exact(&mut len_buf).await?;
     let payload_len = u32::from_be_bytes(len_buf) as usize;
+
+    if payload_len > 4 * 1024 {
+        dbg!("packet is too big");
+        return Err(anyhow::anyhow!("packet is too big"));
+    }
 
     // читаем ciphertext
     let mut cipher_buf = vec![0u8; payload_len];
