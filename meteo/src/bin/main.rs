@@ -7,7 +7,6 @@
 
 use esp_hal::interrupt::software::{SoftwareInterrupt, SoftwareInterruptControl};
 use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
-use esp_radio::wifi::WifiConfig;
 use esp_radio::{Controller, init};
 
 use embassy_executor::Spawner;
@@ -29,6 +28,8 @@ use esp_backtrace as _;
 use esp_alloc as _;
 // use esp_preempt as _;
 
+use esp_rtos as _;
+
 esp_bootloader_esp_idf::esp_app_desc!();
 
 use embassy_sync::mutex::Mutex;
@@ -43,7 +44,6 @@ use meteo::{
 };
 
 use embassy_executor::raw::Executor;
-use esp_rtos;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
@@ -70,8 +70,14 @@ async fn main(spawner: Spawner) -> ! {
     // let esp_radio_ctrl = init_esp_radio();
     let esp_radio_ctrl = &*mk_static!(Controller<'static>, esp_radio::init().unwrap());
 
-    let (controller, interfaces) =
-        esp_radio::wifi::new(esp_radio_ctrl, peripherals.WIFI, WifiConfig::default()).unwrap();
+    // WifiMode::default()
+
+    let (controller, interfaces) = esp_radio::wifi::new(
+        esp_radio_ctrl,
+        peripherals.WIFI,
+        esp_radio::wifi::Config::default(),
+    )
+    .unwrap();
 
     let wifi_interface = interfaces.sta;
 

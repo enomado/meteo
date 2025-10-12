@@ -140,6 +140,8 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", br
   # "defmt",
   "esp32c3",
   "embassy",
+  # "esp-alloc",
+  "esp-radio",
 ] }
 
 
