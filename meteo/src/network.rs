@@ -1,7 +1,7 @@
 use embassy_net::{Runner, Stack, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use esp_radio::wifi::{
-    ClientConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
+    WifiController, WifiDevice, WifiEvent, WifiStationState, scan::ScanConfig, sta::StationConfig,
 };
 
 use heapless::Vec;
@@ -26,18 +26,20 @@ pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
     println!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        match esp_radio::wifi::sta_state() {
-            WifiStaState::Connected => {
+        match esp_radio::wifi::station_state() {
+            WifiStationState::Connected => {
                 // wait until we're no longer connected
-                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                controller
+                    .wait_for_event(WifiEvent::StationDisconnected)
+                    .await;
                 Timer::after(Duration::from_millis(5000)).await
             }
             _ => {}
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = esp_radio::wifi::ModeConfig::Client(
-                ClientConfig::default()
+            let client_config = esp_radio::wifi::ModeConfig::Station(
+                StationConfig::default()
                     .with_ssid(WIFI_SSID.into())
                     .with_password(WIFI_PASSWD.into()),
             );
