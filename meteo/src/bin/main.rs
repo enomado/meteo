@@ -27,7 +27,7 @@ use esp_backtrace as _;
 use esp_alloc as _;
 // use esp_preempt as _;
 
-use esp_radio::wifi::WifiController;
+use esp_radio::wifi::{Config, ControllerConfig, WifiController, sta::StationConfig};
 use esp_rtos as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -70,8 +70,17 @@ async fn main(spawner: Spawner) -> ! {
     // let esp_radio_ctrl = init_esp_radio();
     // let esp_radio_ctrl = &*mk_static!(WifiController<'static>, esp_radio::init().unwrap());
 
-    let (controller, interfaces) =
-        esp_radio::wifi::new(peripherals.WIFI, Default::default()).unwrap();
+    let station_config = Config::Station(
+        StationConfig::default()
+            .with_ssid(WIFI_SSID)
+            .with_password(WIFI_PASSWD.into()),
+    );
+
+    let (controller, interfaces) = esp_radio::wifi::new(
+        peripherals.WIFI,
+        ControllerConfig::default().with_initial_config(station_config),
+    )
+    .unwrap();
 
     // WifiMode::default()
 

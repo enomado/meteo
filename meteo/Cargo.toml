@@ -79,7 +79,6 @@ esp-radio = { git = "https://github.com/esp-rs/esp-hal", package = "esp-radio", 
   "defmt",
   "esp-alloc",
   "esp32c3",
-  "smoltcp",
   "wifi",
 ] }
 
@@ -111,7 +110,7 @@ embassy-executor = { version = "0.9", features = [
   # "task-arena-size-20480",
 ] }
 
-embassy-net = { version = "0.7.0", features = [
+embassy-net = { version = "0.8.0", features = [
   "defmt",
   "dhcpv4",
   "medium-ethernet",

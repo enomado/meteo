@@ -1,8 +1,6 @@
 use embassy_net::{Runner, Stack, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
-use esp_radio::wifi::{
-    WifiController, WifiDevice, WifiEvent, WifiStationState, scan::ScanConfig, sta::StationConfig,
-};
+use esp_radio::wifi::{Interface, WifiController};
 
 use heapless::Vec;
 
@@ -24,54 +22,26 @@ include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
-    println!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        match esp_radio::wifi::station_state() {
-            WifiStationState::Connected => {
-                // wait until we're no longer connected
-                controller
-                    .wait_for_event(WifiEvent::StationDisconnected)
-                    .await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => {}
-        }
-
-        if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = esp_radio::wifi::ModeConfig::Station(
-                StationConfig::default()
-                    .with_ssid(WIFI_SSID.into())
-                    .with_password(WIFI_PASSWD.into()),
-            );
-            controller.set_config(&client_config).unwrap();
-            println!("Starting wifi");
-            controller.start_async().await.unwrap();
-            println!("Wifi started!");
-
-            println!("Scan");
-            let scan_config = ScanConfig::default().with_max(10);
-            let result = controller
-                .scan_with_config_async(scan_config)
-                .await
-                .unwrap();
-            for ap in result {
-                println!("{:?}", ap);
-            }
-        }
         println!("About to connect...");
 
         match controller.connect_async().await {
-            Ok(_) => println!("Wifi connected!"),
+            Ok(info) => {
+                println!("Wifi connected to {:?}", info);
+                let info = controller.wait_for_disconnect_async().await.ok();
+                println!("Disconnected: {:?}", info);
+            }
             Err(e) => {
                 println!("Failed to connect to wifi: {:?}", e);
-                Timer::after(Duration::from_millis(5000)).await
             }
         }
+
+        Timer::after(Duration::from_millis(5000)).await
     }
 }
 
 #[embassy_executor::task]
-pub async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+pub async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
     runner.run().await
 }
 
