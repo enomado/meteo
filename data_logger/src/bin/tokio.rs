@@ -117,21 +117,6 @@ async fn handle_client(mut stream: TcpStream) {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let listener = TcpListener::bind(ADDR).await?;
-    println!("Сервер слушает на {}", ADDR);
-
-    loop {
-        let (socket, addr) = listener.accept().await?;
-        println!("Новое соединение: {}", addr);
-
-        tokio::spawn(async move {
-            handle_client(socket).await;
-        });
-    }
-}
-
 async fn log_sensor_data(
     client: &tokio_postgres::Client,
     data: &ConvertedSensor,
@@ -147,4 +132,19 @@ async fn log_sensor_data(
         .await?;
 
     Ok(rows_affected)
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let listener = TcpListener::bind(ADDR).await?;
+    println!("Сервер слушает на {}", ADDR);
+
+    loop {
+        let (socket, addr) = listener.accept().await?;
+        println!("Новое соединение: {}", addr);
+
+        tokio::spawn(async move {
+            handle_client(socket).await;
+        });
+    }
 }
