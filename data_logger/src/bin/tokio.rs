@@ -12,8 +12,10 @@ const ADDR: &str = "0.0.0.0:1234";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SensorData {
-    pub pressure: f32,
-    pub temp: f32,
+    pub pressure: Option<f32>,
+    pub temp: Option<f32>,
+    pub co2: Option<u16>,
+    pub humidity: Option<f32>,
     // millis epoch
     pub time: u64,
 }
@@ -24,6 +26,8 @@ impl SensorData {
         ConvertedSensor {
             pressure: self.pressure,
             temp: self.temp,
+            co2: self.co2,
+            humidity: self.humidity,
             time: dt,
         }
     }
@@ -31,8 +35,10 @@ impl SensorData {
 
 #[derive(Debug)]
 pub struct ConvertedSensor {
-    pub pressure: f32,
-    pub temp: f32,
+    pub pressure: Option<f32>,
+    pub temp: Option<f32>,
+    pub co2: Option<u16>,
+    pub humidity: Option<f32>,
     pub time: DateTime<Utc>,
 }
 
@@ -103,14 +109,23 @@ async fn handle_client(mut stream: TcpStream) {
         let s = s.iter().map(|s| s.convert()).collect_vec();
 
         for o in s {
-            let pressure_mm = o.pressure / 133.322;
-            let pressure_hpa = o.pressure / 100.0;
             let local_time = o.time.with_timezone(&Local);
 
-            println!(
-                "{}, {:0.4}, {:0.4}, {:0.4}",
-                local_time, pressure_mm, pressure_hpa, o.temp
-            );
+            if let Some(pressure) = o.pressure {
+                let pressure_mm = pressure / 133.322;
+                let pressure_hpa = pressure / 100.0;
+                println!(
+                    "{}, P: {:0.4} mmHg, {:0.4} hPa, T: {:0.4}",
+                    local_time, pressure_mm, pressure_hpa, o.temp.unwrap_or(0.0)
+                );
+            }
+
+            if let Some(co2) = o.co2 {
+                println!(
+                    "{}, CO2: {} ppm, T: {:0.2}, H: {:0.2}%",
+                    local_time, co2, o.temp.unwrap_or(0.0), o.humidity.unwrap_or(0.0)
+                );
+            }
 
             log_sensor_data(&client, &o).await.unwrap();
         }
@@ -121,13 +136,13 @@ async fn log_sensor_data(
     client: &tokio_postgres::Client,
     data: &ConvertedSensor,
 ) -> anyhow::Result<u64> {
-    // Переводим millis → chrono::DateTime<Utc>
     let dt = data.time;
+    let co2: Option<i32> = data.co2.map(|v| v as i32);
 
     let rows_affected = client
         .execute(
-            "INSERT INTO sensor (time, pressure, temp) VALUES ($1, $2, $3)",
-            &[&dt, &data.pressure, &data.temp],
+            "INSERT INTO sensor (time, pressure, temp, co2, humidity) VALUES ($1, $2, $3, $4, $5)",
+            &[&dt, &data.pressure, &data.temp, &co2, &data.humidity],
         )
         .await?;
 
