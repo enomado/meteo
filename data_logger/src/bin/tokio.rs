@@ -1,16 +1,11 @@
 use aes_gcm::{Aes128Gcm, KeyInit, Nonce, aead::Aead};
-use anyhow::{Context, bail};
+use anyhow::Context;
 use chrono::{DateTime, Local, TimeZone, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_postgres::NoTls;
-
-mod embedded {
-    use refinery::embed_migrations;
-    embed_migrations!("./migrations");
-}
 
 static KEY: [u8; 16] = *b"supersecretkey!1"; // 128-бит ключ
 const ADDR: &str = "0.0.0.0:1234";
@@ -157,30 +152,6 @@ async fn log_sensor_data(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // запуск миграций при старте
-    let (mut client, connection) = tokio_postgres::connect(DB_CONN, NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            eprintln!("migration connection error: {}", e);
-        }
-    });
-
-    let report = embedded::migrations::runner()
-        .run_async(&mut client)
-        .await?;
-
-    let applied = report.applied_migrations();
-    if applied.is_empty() {
-        println!("Миграции: всё актуально");
-    } else {
-        for m in applied {
-            println!("Миграция применена: {} - {}", m.version(), m.name());
-        }
-    }
-
-    drop(client);
-
     let listener = TcpListener::bind(ADDR).await?;
     println!("Сервер слушает на {}", ADDR);
 
