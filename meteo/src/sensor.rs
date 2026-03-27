@@ -64,6 +64,7 @@ pub struct SensorData {
     pub temp: Option<f32>,
     pub co2: Option<u16>,
     pub humidity: Option<f32>,
+    pub scd_temp: Option<f32>,
     // millis epoch
     pub time: u64,
 }
@@ -190,9 +191,10 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         let time = get_current_time_epoch();
         let mdata = SensorData {
             pressure,
-            temp: baro_temp.or(scd_temp),
+            temp: baro_temp,
             co2,
             humidity,
+            scd_temp,
             time,
         };
         enqueue_sensor_data(mdata).await;

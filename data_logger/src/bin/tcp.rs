@@ -16,6 +16,7 @@ impl SensorData {
             temp: self.temp,
             co2: self.co2,
             humidity: self.humidity,
+            scd_temp: self.scd_temp,
             time,
         }
     }
@@ -27,6 +28,7 @@ pub struct SensorDataClean {
     pub temp: Option<f32>,
     pub co2: Option<u16>,
     pub humidity: Option<f32>,
+    pub scd_temp: Option<f32>,
     pub time: DateTime<Utc>,
 }
 
@@ -59,6 +61,7 @@ pub struct SensorData {
     pub temp: Option<f32>,
     pub co2: Option<u16>,
     pub humidity: Option<f32>,
+    pub scd_temp: Option<f32>,
     // millis epoch
     pub time: u64,
 }

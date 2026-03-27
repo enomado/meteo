@@ -17,6 +17,7 @@ pub struct SensorData {
     pub temp: Option<f32>,
     pub co2: Option<u16>,
     pub humidity: Option<f32>,
+    pub scd_temp: Option<f32>,
     // millis epoch
     pub time: u64,
 }
@@ -29,6 +30,7 @@ impl SensorData {
             temp: self.temp,
             co2: self.co2,
             humidity: self.humidity,
+            scd_temp: self.scd_temp,
             time: dt,
         }
     }
@@ -40,6 +42,7 @@ pub struct ConvertedSensor {
     pub temp: Option<f32>,
     pub co2: Option<u16>,
     pub humidity: Option<f32>,
+    pub scd_temp: Option<f32>,
     pub time: DateTime<Utc>,
 }
 
@@ -149,8 +152,8 @@ async fn log_sensor_data(
 
     let rows_affected = client
         .execute(
-            "INSERT INTO sensor (time, pressure, temp, co2, humidity) VALUES ($1, $2, $3, $4, $5)",
-            &[&dt, &data.pressure, &data.temp, &co2, &data.humidity],
+            "INSERT INTO sensor (time, pressure, temp, co2, humidity, scd_temp) VALUES ($1, $2, $3, $4, $5, $6)",
+            &[&dt, &data.pressure, &data.temp, &co2, &data.humidity, &data.scd_temp],
         )
         .await?;
 

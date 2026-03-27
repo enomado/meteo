@@ -13,7 +13,8 @@ CREATE TABLE sensor (
     pressure REAL,
     temp REAL,
     co2 INTEGER,
-    humidity REAL
+    humidity REAL,
+    scd_temp REAL
 );
 
 -- превращаем её в hypertable
@@ -57,6 +58,10 @@ SELECT
     -- humidity
     min(humidity)::real AS humidity_min,
     percentile_cont(0.5) WITHIN GROUP (ORDER BY humidity)::real AS humidity_median,
-    max(humidity)::real AS humidity_max
+    max(humidity)::real AS humidity_max,
+    -- scd_temp
+    min(scd_temp)::real AS scd_temp_min,
+    percentile_cont(0.5) WITHIN GROUP (ORDER BY scd_temp)::real AS scd_temp_median,
+    max(scd_temp)::real AS scd_temp_max
 FROM sensor
 GROUP BY bucket;
