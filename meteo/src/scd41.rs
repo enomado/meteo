@@ -34,17 +34,23 @@ pub async fn scd41_loop() {
     let serial = scd.serial_number().await;
     match serial {
         Ok(s) => println!("SCD41 serial: {:?}", s),
-        Err(_) => println!("SCD41: failed to read serial"),
+        Err(e) => {
+            println!("SCD41: failed to read serial: {:?}, sensor not connected?", e);
+            return;
+        }
     }
 
-    scd.start_periodic_measurement().await.unwrap();
-    println!("SCD41: periodic measurement started");
+    if let Err(e) = scd.start_low_power_periodic_measurement().await {
+        println!("SCD41: failed to start low-power periodic measurement: {:?}", e);
+        return;
+    }
+    println!("SCD41: low-power periodic measurement started (~30s)");
 
     let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
     ntp_ready_receiver.changed_and(|s| *s == true).await;
 
     loop {
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(30)).await;
 
         match scd.data_ready().await {
             Ok(true) => {}

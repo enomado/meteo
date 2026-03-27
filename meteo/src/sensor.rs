@@ -43,7 +43,7 @@ pub async fn get_barometer_spi<'a>(
     let mut delay = Delay;
 
     let config = bmp390_rs::config::Configuration::default()
-        .output_data_rate(bmp390_rs::register::odr::OutputDataRate::R0p1Hz) // работает
+        .output_data_rate(bmp390_rs::register::odr::OutputDataRate::R0p05Hz) // ~20 сек
         .pressure_oversampling(bmp390_rs::register::osr::Oversampling::X32)
         .temperature_oversampling(bmp390_rs::register::osr::Oversampling::X8)
         .iir_filter_coefficient(bmp390_rs::register::config::IIRFilterCoefficient::Coef3);
@@ -71,18 +71,26 @@ pub struct SensorData {
     pub time: u64,
 }
 
-// pub type ChannelType = Channel<CriticalSectionRawMutex, SensorData, 3>;
-// pub static CHANNEL: ChannelType = Channel::new();
+#[derive(Debug, Clone)]
+pub struct BaroData {
+    pub pressure: f32,
+    pub temp: f32,
+}
 
-use heapless::spsc::{Producer, Queue};
-// pub static SENSOR_QUE: Queue<SensorData, 4> = Queue::new();
+#[derive(Debug, Clone)]
+pub struct Co2Data {
+    pub co2: u16,
+    pub temp: f32,
+    pub humidity: f32,
+}
 
-// use heapless::HistoryBuffer;
+use embassy_sync::watch::Watch;
 
-// pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, HistoryBuffer<SensorData, 200>> =
-//     Mutex::new(HistoryBuffer::new());
+pub static BARO_WATCH: Watch<CriticalSectionRawMutex, BaroData, 2> = Watch::new();
+pub static CO2_WATCH: Watch<CriticalSectionRawMutex, Co2Data, 2> = Watch::new();
 
-// NoopRawMutex
+use heapless::spsc::Queue;
+
 pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> =
     Mutex::new(Queue::new());
 
