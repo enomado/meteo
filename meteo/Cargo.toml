@@ -34,11 +34,11 @@ sntpc = { version = "*", default-features = false, features = [
 
 embedded-hal-bus = { version = "*" }
 embedded-nal = { version = "*" }
-embedded-io = { version = "0.6.1", features = [
+embedded-io = { version = "*", features = [
   # 
   # "defmt-03",
 ] }
-embedded-io-async = { version = "0.6.1", features = [
+embedded-io-async = { version = "*", features = [
   # 
   # "defmt-03",
 ] }
@@ -110,7 +110,7 @@ embassy-executor = { version = "0.9", features = [
   # "task-arena-size-20480",
 ] }
 
-embassy-net = { version = "0.8.0", features = [
+embassy-net = { version = "*", features = [
   "defmt",
   "dhcpv4",
   "medium-ethernet",
@@ -124,7 +124,7 @@ embassy-net = { version = "0.8.0", features = [
 
 
 # for more networking protocol support see https://crates.io/crates/edge-net
-embassy-time = { version = "0.5.0", features = [
+embassy-time = { version = "*", features = [
   # 
   # "defmt",
 ] }
@@ -144,7 +144,7 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", br
 ] }
 
 
-smoltcp = { version = "0.12.0", default-features = false, features = [
+smoltcp = { version = "*", default-features = false, features = [
   # "defmt",
   "medium-ethernet",
   "multicast",

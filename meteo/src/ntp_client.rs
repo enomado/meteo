@@ -1,4 +1,4 @@
-use smoltcp::wire::DnsQueryType;
+use embassy_net::dns::DnsQueryType;
 use sntpc::{NtpContext, NtpResult, NtpTimestampGenerator, get_time};
 
 use core::net::IpAddr;
