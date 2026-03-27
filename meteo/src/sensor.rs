@@ -6,14 +6,18 @@ use embassy_sync::{
 use embassy_time::{Delay, Duration, Timer};
 use esp_hal::{
     gpio::{Level, Output, OutputConfig},
-    peripherals::{GPIO8, Peripherals},
+    i2c::master::{Config as I2cConfig, I2c},
+    peripherals::{GPIO1, GPIO2, GPIO5, GPIO6, GPIO7, GPIO8, I2C0, SPI2},
     spi::master::Spi,
+    time::Rate,
 };
 use esp_println::println;
+use heapless::spsc::Queue;
+use libscd::asynchronous::scd4x::Scd4x;
 
 use crate::{
     ntp_client::{CLOCK_IS_SYNCED_WATCH, get_current_time_epoch},
-    spi_helper::init_spi_bus_new2,
+    spi_helper::BarometerArgs,
 };
 
 pub type BarometerDevice<'a> = Bmp390<
@@ -31,13 +35,7 @@ pub async fn get_barometer_spi<'a>(
     spi_bus: &'a Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>>,
     cs_pin: GPIO8<'a>,
 ) -> BarometerDevice<'a> {
-    // Measurement: 87262.42 23.572037
-    // https://github.com/EmilNorden/bmp390-rs
-
     let cs_pin = Output::new(cs_pin, Level::High, OutputConfig::default());
-
-    // let spi_bus: Mutex<NoopRawMutex, Spi<'_, esp_hal::Async>> =
-    // Mutex::<NoopRawMutex, _>::new(spi_bus);
     let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(spi_bus, cs_pin);
 
     let mut delay = Delay;
@@ -50,9 +48,8 @@ pub async fn get_barometer_spi<'a>(
 
     // если ResetPolicy::Soft
     // Issue CMD=0xB6 and wait for `STATUS.cmd_rdy` (recommended default).
-    // о не успевает законфигурироваться и молчит - циферки не меняет
+    // но не успевает законфигурироваться и молчит - циферки не меняет
 
-    // Connect via SPI. Use Bmp390::new_i2c for I2C.
     let device: BarometerDevice<'a> =
         Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut delay)
             .await
@@ -71,89 +68,136 @@ pub struct SensorData {
     pub time: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct BaroData {
-    pub pressure: f32,
-    pub temp: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct Co2Data {
-    pub co2: u16,
-    pub temp: f32,
-    pub humidity: f32,
-}
-
-use embassy_sync::watch::Watch;
-
-pub static BARO_WATCH: Watch<CriticalSectionRawMutex, BaroData, 2> = Watch::new();
-pub static CO2_WATCH: Watch<CriticalSectionRawMutex, Co2Data, 2> = Watch::new();
-
-use heapless::spsc::Queue;
-
 pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> =
     Mutex::new(Queue::new());
 
-#[embassy_executor::task]
-pub async fn sensor_loop_new() {
-    let peripherals = unsafe { Peripherals::steal() };
-
-    let spi_bus = init_spi_bus_new2().await;
-    let mut barometer = get_barometer_spi(&spi_bus, peripherals.GPIO8).await;
-
-    let p = barometer.max_measurement_time_us();
-
-    println!("time is: {}", p);
-
-    let _data = barometer.read_sensor_data().await.unwrap();
-
-    let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
-
-    ntp_ready_receiver.changed_and(|s| *s == true).await;
-
-    loop {
-        let status2 = barometer.read::<IntStatus>().await.unwrap();
-
-        if status2.drdy {
-            let data = barometer.read_sensor_data().await.unwrap();
-
-            let time = get_current_time_epoch();
-
-            let mdata = SensorData {
-                pressure: Some(data.pressure()),
-                temp: Some(data.temperature()),
-                co2: None,
-                humidity: None,
-                time: time,
-            };
-
-            // CHANNEL.send(mdata).await;
-
-            println!(
-                "Measurement: {:?} {:?} {:?}",
-                data.pressure(),
-                data.temperature(),
-                status2.drdy
-            );
-
-            write_sensor_data(mdata).await;
-        }
-
-        Timer::after(Duration::from_micros(p.into())).await;
-    }
-}
-
-pub async fn write_sensor_data(mdata: SensorData) {
-    // return;
-
+async fn enqueue_sensor_data(mdata: SensorData) {
     let mut p = SENSOR_QUE.lock().await;
-    // sort of ring buffer
-
     match p.enqueue(mdata) {
-        Ok(x) => {}
+        Ok(_) => {}
         Err(el) => {
             p.dequeue().unwrap();
             p.enqueue(el).unwrap();
         }
+    }
+}
+
+pub struct SensorPeripherals<'a> {
+    // SPI (BMP390)
+    pub spi2: SPI2<'a>,
+    pub spi_clk: GPIO7<'a>,
+    pub spi_mosi: GPIO6<'a>,
+    pub spi_miso: GPIO5<'a>,
+    pub spi_cs: GPIO8<'a>,
+    // I2C (SCD41)
+    pub i2c0: I2C0<'a>,
+    pub i2c_sda: GPIO1<'a>,
+    pub i2c_scl: GPIO2<'a>,
+}
+
+#[embassy_executor::task]
+pub async fn sensor_loop(p: SensorPeripherals<'static>) {
+    // --- init BMP390 ---
+    let spi_bus = crate::spi_helper::init_spi_bus(BarometerArgs {
+        spi2: p.spi2,
+        clk: p.spi_clk,
+        mosi: p.spi_mosi,
+        miso: p.spi_miso,
+    });
+    let mut barometer = get_barometer_spi(&spi_bus, p.spi_cs).await;
+    let _data = barometer.read_sensor_data().await.unwrap();
+    println!("BMP390: init ok");
+
+    // --- init SCD41 ---
+    let i2c = I2c::new(
+        p.i2c0,
+        I2cConfig::default().with_frequency(Rate::from_khz(100)),
+    )
+    .unwrap()
+    .with_sda(p.i2c_sda)
+    .with_scl(p.i2c_scl)
+    .into_async();
+
+    let mut scd = Scd4x::new(i2c, Delay);
+
+    // остановить на случай если датчик уже измерял (после перезагрузки MCU)
+    let _ = scd.stop_periodic_measurement().await;
+    Timer::after(Duration::from_millis(500)).await;
+
+    let serial = scd.serial_number().await;
+    match serial {
+        Ok(s) => println!("SCD41 serial: {:?}", s),
+        Err(e) => {
+            println!("SCD41: failed to read serial: {:?}, sensor not connected?", e);
+            return;
+        }
+    }
+
+    // --- wait NTP ---
+    let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
+    ntp_ready_receiver.changed_and(|s| *s == true).await;
+
+    // --- main loop ~30 сек ---
+    loop {
+        // 1) читаем BMP390 если готов
+        let mut pressure = None;
+        let mut baro_temp = None;
+        let status = barometer.read::<IntStatus>().await.unwrap();
+        if status.drdy {
+            let data = barometer.read_sensor_data().await.unwrap();
+            pressure = Some(data.pressure());
+            baro_temp = Some(data.temperature());
+            println!("BMP390: P={:.1} T={:.2}", data.pressure(), data.temperature());
+        }
+
+        // 2) запускаем single-shot SCD41
+        if let Err(e) = scd.measure_single_shot().await {
+            println!("SCD41: single shot error: {:?}", e);
+            Timer::after(Duration::from_secs(30)).await;
+            continue;
+        }
+
+        // 3) ждём data_ready от SCD41
+        loop {
+            Timer::after(Duration::from_secs(1)).await;
+            match scd.data_ready().await {
+                Ok(true) => break,
+                Ok(false) => continue,
+                Err(e) => {
+                    println!("SCD41: data_ready error: {:?}", e);
+                    break;
+                }
+            }
+        }
+
+        // 4) читаем SCD41
+        let mut co2 = None;
+        let mut humidity = None;
+        let mut scd_temp = None;
+        match scd.read_measurement().await {
+            Ok(m) => {
+                co2 = Some(m.co2);
+                humidity = Some(m.humidity);
+                scd_temp = Some(m.temperature);
+                println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
+            }
+            Err(e) => {
+                println!("SCD41: read error: {:?}", e);
+            }
+        }
+
+        // 5) объединяем с одним timestamp
+        let time = get_current_time_epoch();
+        let mdata = SensorData {
+            pressure,
+            temp: baro_temp.or(scd_temp),
+            co2,
+            humidity,
+            time,
+        };
+        enqueue_sensor_data(mdata).await;
+
+        // 6) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
+        Timer::after(Duration::from_secs(25)).await;
     }
 }

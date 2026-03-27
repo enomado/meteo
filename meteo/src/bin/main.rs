@@ -40,8 +40,7 @@ use meteo::ntp_client::ntp_sync_loop;
 use meteo::{
     network::{connection, net_task, network_send_loop},
     ntp_client::CURRENT_OFFSET,
-    scd41::scd41_loop,
-    sensor::sensor_loop_new,
+    sensor::{SensorPeripherals, sensor_loop},
 };
 
 use embassy_executor::raw::Executor;
@@ -121,8 +120,16 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(net_task(runner)).ok();
     spawner.spawn(connection(controller)).ok();
 
-    spawner.spawn(sensor_loop_new()).ok();
-    spawner.spawn(scd41_loop()).ok();
+    spawner.spawn(sensor_loop(SensorPeripherals {
+        spi2: peripherals.SPI2,
+        spi_clk: peripherals.GPIO7,
+        spi_mosi: peripherals.GPIO6,
+        spi_miso: peripherals.GPIO5,
+        spi_cs: peripherals.GPIO8,
+        i2c0: peripherals.I2C0,
+        i2c_sda: peripherals.GPIO1,
+        i2c_scl: peripherals.GPIO2,
+    })).ok();
 
     let spawner_w = spawner.clone();
     spawner.spawn(ntp_sync_loop(stack, spawner_w)).ok();
