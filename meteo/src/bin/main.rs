@@ -40,6 +40,7 @@ use meteo::ntp_client::ntp_sync_loop;
 use meteo::{
     network::{connection, net_task, network_send_loop},
     ntp_client::CURRENT_OFFSET,
+    scd41::scd41_loop,
     sensor::sensor_loop_new,
 };
 
@@ -121,6 +122,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(connection(controller)).ok();
 
     spawner.spawn(sensor_loop_new()).ok();
+    spawner.spawn(scd41_loop()).ok();
 
     let spawner_w = spawner.clone();
     spawner.spawn(ntp_sync_loop(stack, spawner_w)).ok();

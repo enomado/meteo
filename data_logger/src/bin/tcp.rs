@@ -14,22 +14,19 @@ impl SensorData {
         SensorDataClean {
             pressure: self.pressure,
             temp: self.temp,
-            time: time,
+            co2: self.co2,
+            humidity: self.humidity,
+            time,
         }
     }
 }
 
-// fn from_epoch_millis(ms: i64) -> DateTime<Utc> {
-//     let secs = ms / 1000;
-//     let nsecs = ((ms % 1000) * 1_000_000) as u32;
-//     Utc.timestamp_millis_opt(secs, nsecs).unwrap()
-// }
-
 #[derive(Debug, Clone)]
 pub struct SensorDataClean {
-    pub pressure: f32,
-    pub temp: f32,
-    // millis epoch
+    pub pressure: Option<f32>,
+    pub temp: Option<f32>,
+    pub co2: Option<u16>,
+    pub humidity: Option<f32>,
     pub time: DateTime<Utc>,
 }
 
@@ -58,8 +55,10 @@ use itertools::Itertools;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SensorData {
-    pub pressure: f32,
-    pub temp: f32,
+    pub pressure: Option<f32>,
+    pub temp: Option<f32>,
+    pub co2: Option<u16>,
+    pub humidity: Option<f32>,
     // millis epoch
     pub time: u64,
 }
@@ -110,15 +109,29 @@ fn handle_client(mut stream: TcpStream) {
         let s = s.iter().map(|s| s.convert()).collect_vec();
 
         for o in s {
-            let pressure_mm = o.pressure / 133.322;
-            let pressure_hpa = o.pressure / 100.0;
-
             let local_time = o.time.with_timezone(&Local);
 
-            println!(
-                "{}, {:0.4}, {:0.4}, {:0.4}",
-                local_time, pressure_mm, pressure_hpa, o.temp
-            );
+            if let Some(pressure) = o.pressure {
+                let pressure_mm = pressure / 133.322;
+                let pressure_hpa = pressure / 100.0;
+                println!(
+                    "{}, P: {:0.4} mmHg, {:0.4} hPa, T: {:0.4}",
+                    local_time,
+                    pressure_mm,
+                    pressure_hpa,
+                    o.temp.unwrap_or(0.0)
+                );
+            }
+
+            if let Some(co2) = o.co2 {
+                println!(
+                    "{}, CO2: {} ppm, T: {:0.2}, H: {:0.2}%",
+                    local_time,
+                    co2,
+                    o.temp.unwrap_or(0.0),
+                    o.humidity.unwrap_or(0.0)
+                );
+            }
         }
 
         // match stream.read(&mut buf) {

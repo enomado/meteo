@@ -7,6 +7,7 @@
 
 pub mod network;
 pub mod ntp_client;
+pub mod scd41;
 pub mod sensor;
 pub mod spi_helper;
 pub mod utils;

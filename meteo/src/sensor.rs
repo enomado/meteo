@@ -63,8 +63,10 @@ pub async fn get_barometer_spi<'a>(
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SensorData {
-    pub pressure: f32,
-    pub temp: f32,
+    pub pressure: Option<f32>,
+    pub temp: Option<f32>,
+    pub co2: Option<u16>,
+    pub humidity: Option<f32>,
     // millis epoch
     pub time: u64,
 }
@@ -110,8 +112,10 @@ pub async fn sensor_loop_new() {
             let time = get_current_time_epoch();
 
             let mdata = SensorData {
-                pressure: data.pressure(),
-                temp: data.temperature(),
+                pressure: Some(data.pressure()),
+                temp: Some(data.temperature()),
+                co2: None,
+                humidity: None,
                 time: time,
             };
 
