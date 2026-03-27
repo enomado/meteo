@@ -17,5 +17,6 @@ aes-gcm = { version = "*" }
 
 
 tokio-postgres = { version = "*" }
+refinery = { version = "*", features = ["tokio-postgres"] }
 
 postgres-types = { version = "*", features = ["derive", "with-chrono-0_4"] }
