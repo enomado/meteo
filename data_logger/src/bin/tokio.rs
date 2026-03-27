@@ -79,7 +79,7 @@ async fn read_packet(
     Ok(data)
 }
 
-async fn handle_client(mut stream: TcpStream) {
+async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
     let mut nonce_counter = 0;
 
     let (client, connection) =
@@ -87,22 +87,27 @@ async fn handle_client(mut stream: TcpStream) {
             .await
             .unwrap();
 
-    // spawn — чтобы коннект в фоне жил
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("connection error: {}", e);
         }
     });
 
+    println!("[{}] client connected, waiting for packets...", addr);
+
     loop {
         nonce_counter += 1;
 
+        println!("[{}] waiting for packet #{}", addr, nonce_counter);
         let result: Result<Vec<SensorData>, anyhow::Error> =
             read_packet(&mut stream, nonce_counter).await;
         let s = match result {
-            Ok(v) => v,
+            Ok(v) => {
+                println!("[{}] received packet #{}: {} sensor readings", addr, nonce_counter, v.len());
+                v
+            }
             Err(e) => {
-                eprintln!("Ошибка при чтении пакета: {:?}", e);
+                eprintln!("[{}] Ошибка при чтении пакета #{}: {:?}", addr, nonce_counter, e);
                 break;
             }
         };
@@ -131,6 +136,8 @@ async fn handle_client(mut stream: TcpStream) {
             log_sensor_data(&client, &o).await.unwrap();
         }
     }
+
+    println!("[{}] client disconnected after {} packets", addr, nonce_counter - 1);
 }
 
 async fn log_sensor_data(
@@ -160,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
         println!("Новое соединение: {}", addr);
 
         tokio::spawn(async move {
-            handle_client(socket).await;
+            handle_client(socket, addr).await;
         });
     }
 }

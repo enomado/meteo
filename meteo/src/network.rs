@@ -76,10 +76,8 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     let mut measurements_buf: heapless::Vec<SensorData, 40> = Vec::new();
 
     loop {
-        // Timer::after(Duration::from_millis(1_000)).await;
-
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(120)));
 
         println!("connecting...");
         let r = socket.connect(remote_endpoint).await;
@@ -90,7 +88,6 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         }
 
         println!("connected!");
-        // let mut buf = [0; 1024];
 
         let mut noonce = 0u64;
 
@@ -107,12 +104,12 @@ pub async fn network_send_loop(stack: Stack<'static>) {
             }
 
             noonce += 1;
+            println!("sending {} measurements, nonce={}", p.len(), noonce);
             let r = write_packet(&mut socket, p, noonce).await;
 
-            // если есть прокси - пишет что всё ок но это не так. нужно явно сообщаться что не вышло
             match r {
                 Ok(g) => {
-                    println!("write! {}", g);
+                    println!("write ok, {} bytes", g);
                     measurements_buf.clear();
                 }
                 Err(e) => {
@@ -121,20 +118,6 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                     break;
                 }
             }
-
-            // let n = match socket.read(&mut buf).await {
-            //     Ok(0) => {
-            //         println!("read EOF");
-            //         break;
-            //     }
-
-            //     Ok(n) => n,
-            //     Err(e) => {
-            //         println!("read error: {:?}", e);
-            //         break;
-            //     }
-            // };
-            // println!("{}", core::str::from_utf8(&buf[..n]).unwrap());
 
             Timer::after(Duration::from_millis(3000)).await;
         }
