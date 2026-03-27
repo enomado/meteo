@@ -101,12 +101,15 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     let addr: IpAddr = ntp_addrs[0].into();
     let sock_addr = SocketAddr::from((addr, 123));
 
+    println!("ntp: sending to {:?}", sock_addr);
     let result = get_time(sock_addr, &socket, context).await;
 
     match &result {
-        Ok(s) => {}
+        Ok(s) => {
+            println!("ntp: ok, offset={}", s.offset());
+        }
         Err(e) => {
-            println!("{:?}", e);
+            println!("ntp: error {:?}", e);
         }
     }
 
@@ -127,18 +130,40 @@ pub async fn ntp_sync_loop(stack: Stack<'static>, spawner: Spawner) {
     loop {
         println!("checking time");
 
-        let p = with_timeout(Duration::from_secs(7), ntp_sync(stack))
-            .await
-            .ok()
-            .and_then(|s| s);
+        let p = with_timeout(Duration::from_secs(7), ntp_sync(stack)).await;
+
+        if p.is_err() {
+            println!("ntp: timeout!");
+        }
+
+        let p = p.ok().and_then(|s| s);
 
         if let Some(pp) = p {
             let off = pp.offset() as i64;
             unsafe { CURRENT_OFFSET.lock_mut(|s| *s += off) };
 
             flag_sender.send(true);
+            break;
         }
 
+        Timer::after(Duration::from_secs(5)).await;
+    }
+
+    // после синхронизации — периодическая подстройка
+    loop {
         Timer::after(Duration::from_millis(1000_000)).await;
+
+        println!("checking time");
+
+        let p = with_timeout(Duration::from_secs(7), ntp_sync(stack)).await;
+
+        if p.is_err() {
+            println!("ntp: timeout!");
+        }
+
+        if let Some(pp) = p.ok().and_then(|s| s) {
+            let off = pp.offset() as i64;
+            unsafe { CURRENT_OFFSET.lock_mut(|s| *s += off) };
+        }
     }
 }
