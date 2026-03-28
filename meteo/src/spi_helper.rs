@@ -3,7 +3,7 @@ use embassy_sync::{
     mutex::Mutex,
 };
 use esp_hal::{
-    peripherals::{GPIO5, GPIO6, GPIO7, SPI2},
+    peripherals::{GPIO6, GPIO7, GPIO9, SPI2},
     spi::{self, master::Spi},
 };
 use esp_println::println;
@@ -11,7 +11,7 @@ use esp_println::println;
 pub struct BarometerArgs<'a> {
     pub clk: GPIO7<'a>,
     pub mosi: GPIO6<'a>,
-    pub miso: GPIO5<'a>,
+    pub miso: GPIO9<'a>,
     pub spi2: SPI2<'a>,
 }
 

@@ -7,7 +7,7 @@ use embassy_time::{Delay, Duration, Timer};
 use esp_hal::{
     gpio::{Level, Output, OutputConfig},
     i2c::master::{Config as I2cConfig, I2c},
-    peripherals::{GPIO1, GPIO2, GPIO5, GPIO6, GPIO7, GPIO8, I2C0, SPI2},
+    peripherals::{GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO9, GPIO10, I2C0, SPI2},
     spi::master::Spi,
     time::Rate,
 };
@@ -33,7 +33,7 @@ pub type BarometerDevice<'a> = Bmp390<
 
 pub async fn get_barometer_spi<'a>(
     spi_bus: &'a Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>>,
-    cs_pin: GPIO8<'a>,
+    cs_pin: GPIO10<'a>,
 ) -> BarometerDevice<'a> {
     let cs_pin = Output::new(cs_pin, Level::High, OutputConfig::default());
     let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(spi_bus, cs_pin);
@@ -88,16 +88,24 @@ pub struct SensorPeripherals<'a> {
     pub spi2: SPI2<'a>,
     pub spi_clk: GPIO7<'a>,
     pub spi_mosi: GPIO6<'a>,
-    pub spi_miso: GPIO5<'a>,
-    pub spi_cs: GPIO8<'a>,
+    pub spi_miso: GPIO9<'a>,
+    pub spi_cs: GPIO10<'a>,
     // I2C (SCD41)
     pub i2c0: I2C0<'a>,
     pub i2c_sda: GPIO1<'a>,
     pub i2c_scl: GPIO2<'a>,
+    // RGB LED (3 отдельных GPIO)
+    pub led_r: GPIO3<'a>,
+    pub led_g: GPIO4<'a>,
+    pub led_b: GPIO5<'a>,
 }
 
 #[embassy_executor::task]
 pub async fn sensor_loop(p: SensorPeripherals<'static>) {
+    // --- init RGB LED + тест при старте ---
+    let mut led = crate::led::RgbLed::new(p.led_r, p.led_g, p.led_b);
+    led.startup_test();
+
     // --- init BMP390 ---
     let spi_bus = crate::spi_helper::init_spi_bus(BarometerArgs {
         spi2: p.spi2,
@@ -199,7 +207,12 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         };
         enqueue_sensor_data(mdata).await;
 
-        // 6) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
+        // 6) обновляем RGB LED по уровню CO2
+        if let Some(co2_val) = co2 {
+            led.set_co2(co2_val);
+        }
+
+        // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
         Timer::after(Duration::from_secs(25)).await;
     }
 }

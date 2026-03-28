@@ -124,11 +124,14 @@ async fn main(spawner: Spawner) -> ! {
         spi2: peripherals.SPI2,
         spi_clk: peripherals.GPIO7,
         spi_mosi: peripherals.GPIO6,
-        spi_miso: peripherals.GPIO5,
-        spi_cs: peripherals.GPIO8,
+        spi_miso: peripherals.GPIO9,
+        spi_cs: peripherals.GPIO10,
         i2c0: peripherals.I2C0,
         i2c_sda: peripherals.GPIO1,
         i2c_scl: peripherals.GPIO2,
+        led_r: peripherals.GPIO3,
+        led_g: peripherals.GPIO4,
+        led_b: peripherals.GPIO5,
     })).ok();
 
     let spawner_w = spawner.clone();
