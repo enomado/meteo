@@ -63,9 +63,15 @@ impl<'a> RgbLed<'a> {
 
     /// Плавный переход к новому цвету за duration_ms (аппаратный fade)
     pub fn fade_to(&mut self, r: u8, g: u8, b: u8, duration_ms: u16) {
-        let _ = self.r.start_duty_fade(self.cur_r, r, duration_ms);
-        let _ = self.g.start_duty_fade(self.cur_g, g, duration_ms);
-        let _ = self.b.start_duty_fade(self.cur_b, b, duration_ms);
+        if self.cur_r != r {
+            let _ = self.r.start_duty_fade(self.cur_r, r, duration_ms);
+        }
+        if self.cur_g != g {
+            let _ = self.g.start_duty_fade(self.cur_g, g, duration_ms);
+        }
+        if self.cur_b != b {
+            let _ = self.b.start_duty_fade(self.cur_b, b, duration_ms);
+        }
         self.cur_r = r;
         self.cur_g = g;
         self.cur_b = b;
