@@ -139,11 +139,63 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         }
     }
 
+    // --- калибровка temperature offset по BMP390 ---
+    // делаем одно измерение SCD41, сравниваем с BMP390, корректируем offset
+    {
+        // запускаем single-shot для калибровочного замера
+        if let Err(e) = scd.measure_single_shot().await {
+            println!("SCD41 cal: single shot error: {:?}", e);
+        } else {
+            // ждём данные
+            loop {
+                Timer::after(Duration::from_secs(1)).await;
+                match scd.data_ready().await {
+                    Ok(true) => break,
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
+            }
+            if let Ok(m) = scd.read_measurement().await {
+                // читаем BMP390 температуру (может быть не ready — тогда ждём)
+                let mut bmp_temp = None;
+                for _ in 0..10 {
+                    let status = barometer.read::<IntStatus>().await.unwrap();
+                    if status.drdy {
+                        let data = barometer.read_sensor_data().await.unwrap();
+                        bmp_temp = Some(data.temperature());
+                        break;
+                    }
+                    Timer::after(Duration::from_secs(2)).await;
+                }
+                if let Some(t_bmp) = bmp_temp {
+                    let offset_old = scd.get_temperature_offset().await.unwrap_or(4.0);
+                    let offset_new = m.temperature - t_bmp + offset_old;
+                    // offset не может быть отрицательным (ограничение датчика)
+                    let offset_new = if offset_new < 0.0 { 0.0 } else { offset_new };
+                    println!(
+                        "SCD41 cal: T_scd={:.2} T_bmp={:.2} offset {:.2} -> {:.2}",
+                        m.temperature, t_bmp, offset_old, offset_new
+                    );
+                    let _ = scd.set_temperature_offset(offset_new).await;
+                } else {
+                    println!("SCD41 cal: BMP390 not ready, skipping temp offset");
+                }
+            }
+        }
+    }
+
+    // --- проверяем ASC ---
+    match scd.get_automatic_self_calibration().await {
+        Ok(enabled) => println!("SCD41: ASC enabled={}", enabled),
+        Err(e) => println!("SCD41: ASC read error: {:?}", e),
+    }
+
     // --- wait NTP ---
     let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
     ntp_ready_receiver.changed_and(|s| *s == true).await;
 
     // --- main loop ~30 сек ---
+    let mut last_pressure_hpa: Option<u16> = None;
     loop {
         // 1) читаем BMP390 если готов
         let mut pressure = None;
@@ -153,17 +205,23 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
             let data = barometer.read_sensor_data().await.unwrap();
             pressure = Some(data.pressure());
             baro_temp = Some(data.temperature());
+            last_pressure_hpa = Some((data.pressure() / 100.0) as u16);
             println!("BMP390: P={:.1} T={:.2}", data.pressure(), data.temperature());
         }
 
-        // 2) запускаем single-shot SCD41
+        // 2) скармливаем давление в SCD41 для компенсации CO2
+        if let Some(p_hpa) = last_pressure_hpa {
+            let _ = scd.set_ambient_pressure(p_hpa).await;
+        }
+
+        // 3) запускаем single-shot SCD41
         if let Err(e) = scd.measure_single_shot().await {
             println!("SCD41: single shot error: {:?}", e);
             Timer::after(Duration::from_secs(30)).await;
             continue;
         }
 
-        // 3) ждём data_ready от SCD41
+        // 4) ждём data_ready от SCD41
         loop {
             Timer::after(Duration::from_secs(1)).await;
             match scd.data_ready().await {
@@ -176,7 +234,7 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
             }
         }
 
-        // 4) читаем SCD41
+        // 5) читаем SCD41
         let mut co2 = None;
         let mut humidity = None;
         let mut scd_temp = None;
@@ -192,7 +250,7 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
             }
         }
 
-        // 5) объединяем с одним timestamp
+        // 6) объединяем с одним timestamp
         let time = get_current_time_epoch();
         let mdata = SensorData {
             pressure,
@@ -204,12 +262,12 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         };
         enqueue_sensor_data(mdata).await;
 
-        // 6) обновляем RGB LED по уровню CO2
+        // 7) обновляем RGB LED по уровню CO2
         if let Some(co2_val) = co2 {
             p.led.set_co2(co2_val);
         }
 
-        // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
+        // 8) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
         Timer::after(Duration::from_secs(25)).await;
     }
 }
