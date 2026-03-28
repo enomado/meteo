@@ -1,66 +1,134 @@
-use esp_hal::gpio::{Level, Output, OutputConfig};
+use esp_hal::gpio::DriveMode;
+use esp_hal::ledc::{
+    LowSpeed,
+    channel::{self, ChannelIFace},
+    timer,
+};
 
 pub struct RgbLed<'a> {
-    pub r: Output<'a>,
-    pub g: Output<'a>,
-    pub b: Output<'a>,
+    r: channel::Channel<'a, LowSpeed>,
+    g: channel::Channel<'a, LowSpeed>,
+    b: channel::Channel<'a, LowSpeed>,
+    cur_r: u8,
+    cur_g: u8,
+    cur_b: u8,
 }
 
 impl<'a> RgbLed<'a> {
     pub fn new(
-        r: impl esp_hal::gpio::OutputPin + 'a,
-        g: impl esp_hal::gpio::OutputPin + 'a,
-        b: impl esp_hal::gpio::OutputPin + 'a,
+        ledc: &'a esp_hal::ledc::Ledc<'a>,
+        timer: &'a timer::Timer<'a, LowSpeed>,
+        r_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
+        g_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
+        b_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
     ) -> Self {
+        let ch_config = channel::config::Config {
+            timer,
+            duty_pct: 0,
+            drive_mode: DriveMode::PushPull,
+        };
+
+        let mut r = ledc.channel(channel::Number::Channel0, r_pin);
+        r.configure(ch_config).unwrap();
+
+        let mut g = ledc.channel(channel::Number::Channel1, g_pin);
+        g.configure(ch_config).unwrap();
+
+        let mut b = ledc.channel(channel::Number::Channel2, b_pin);
+        b.configure(ch_config).unwrap();
+
         Self {
-            r: Output::new(r, Level::Low, OutputConfig::default()),
-            g: Output::new(g, Level::Low, OutputConfig::default()),
-            b: Output::new(b, Level::Low, OutputConfig::default()),
+            r,
+            g,
+            b,
+            cur_r: 0,
+            cur_g: 0,
+            cur_b: 0,
         }
     }
 
-    pub fn set(&mut self, r: bool, g: bool, b: bool) {
-        if r { self.r.set_high(); } else { self.r.set_low(); }
-        if g { self.g.set_high(); } else { self.g.set_low(); }
-        if b { self.b.set_high(); } else { self.b.set_low(); }
+    /// Установить яркость каждого канала (0-100%)
+    pub fn set(&mut self, r: u8, g: u8, b: u8) {
+        let _ = self.r.set_duty(r);
+        let _ = self.g.set_duty(g);
+        let _ = self.b.set_duty(b);
+        self.cur_r = r;
+        self.cur_g = g;
+        self.cur_b = b;
     }
 
     pub fn off(&mut self) {
-        self.set(false, false, false);
+        self.set(0, 0, 0);
     }
 
-    /// CO2 уровень → цвет
+    /// Плавный переход к новому цвету за duration_ms (аппаратный fade)
+    pub fn fade_to(&mut self, r: u8, g: u8, b: u8, duration_ms: u16) {
+        let _ = self.r.start_duty_fade(self.cur_r, r, duration_ms);
+        let _ = self.g.start_duty_fade(self.cur_g, g, duration_ms);
+        let _ = self.b.start_duty_fade(self.cur_b, b, duration_ms);
+        self.cur_r = r;
+        self.cur_g = g;
+        self.cur_b = b;
+    }
+
+    /// Ждать завершения fade
+    pub fn wait_fade(&self) {
+        while self.r.is_duty_fade_running()
+            || self.g.is_duty_fade_running()
+            || self.b.is_duty_fade_running()
+        {}
+    }
+
+    /// CO2 уровень → плавный RGB
     ///
-    /// - 0-700 ppm: зелёный (норма)
-    /// - 700-1000 ppm: жёлтый (R+G, приемлемо)
-    /// - 1000+ ppm: красный (плохо)
+    /// - 0-700 ppm: зелёный
+    /// - 700-1000 ppm: зелёный → жёлтый
+    /// - 1000-1500 ppm: жёлтый → красный
+    /// - 1500+ ppm: красный
     pub fn set_co2(&mut self, co2: u16) {
-        match co2 {
-            0..=700 => self.set(false, true, false),
-            701..=1000 => self.set(true, true, false),
-            _ => self.set(true, false, false),
-        }
+        let (r, g, b) = co2_to_rgb(co2);
+        self.fade_to(r, g, b, 500);
     }
 
-    /// Тест при старте: R → G → B → белый → выкл
+    /// Тест при старте: плавные переливы R → G → B → W → off
     pub fn startup_test(&mut self) {
-        use esp_hal::delay::Delay;
         use esp_println::println;
 
-        let delay = Delay::new();
+        const D: u16 = 400;
+        const B: u8 = 30;
 
-        let sequence: [(bool, bool, bool, &str); 5] = [
-            (true, false, false, "RED"),
-            (false, true, false, "GREEN"),
-            (false, false, true, "BLUE"),
-            (true, true, true, "WHITE"),
-            (false, false, false, "OFF"),
+        let sequence: [(u8, u8, u8, &str); 5] = [
+            (B, 0, 0, "RED"),
+            (0, B, 0, "GREEN"),
+            (0, 0, B, "BLUE"),
+            (B, B, B, "WHITE"),
+            (0, 0, 0, "OFF"),
         ];
 
         for (r, g, b, name) in sequence {
             println!("LED test: {}", name);
-            self.set(r, g, b);
-            delay.delay_millis(500);
+            self.fade_to(r, g, b, D);
+            self.wait_fade();
         }
+    }
+}
+
+/// CO2 ppm → (R%, G%, B%) в процентах 0-100
+pub fn co2_to_rgb(co2: u16) -> (u8, u8, u8) {
+    const MAX: u8 = 30;
+
+    match co2 {
+        0..=700 => (0, MAX, 0),
+        701..=1000 => {
+            let ratio = ((co2 - 700) as f32) / 300.0;
+            let red = (MAX as f32 * ratio) as u8;
+            (red, MAX, 0)
+        }
+        1001..=1500 => {
+            let ratio = ((co2 - 1000) as f32) / 500.0;
+            let green = (MAX as f32 * (1.0 - ratio)) as u8;
+            (MAX, green, 0)
+        }
+        _ => (MAX, 0, 0),
     }
 }

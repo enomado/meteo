@@ -7,7 +7,7 @@ use embassy_time::{Delay, Duration, Timer};
 use esp_hal::{
     gpio::{Level, Output, OutputConfig},
     i2c::master::{Config as I2cConfig, I2c},
-    peripherals::{GPIO1, GPIO2, GPIO3, GPIO4, GPIO5, GPIO6, GPIO7, GPIO9, GPIO10, I2C0, SPI2},
+    peripherals::{GPIO1, GPIO2, GPIO6, GPIO7, GPIO9, GPIO10, I2C0, SPI2},
     spi::master::Spi,
     time::Rate,
 };
@@ -94,17 +94,14 @@ pub struct SensorPeripherals<'a> {
     pub i2c0: I2C0<'a>,
     pub i2c_sda: GPIO1<'a>,
     pub i2c_scl: GPIO2<'a>,
-    // RGB LED (3 отдельных GPIO)
-    pub led_r: GPIO3<'a>,
-    pub led_g: GPIO4<'a>,
-    pub led_b: GPIO5<'a>,
+    // RGB LED (LEDC PWM)
+    pub led: crate::led::RgbLed<'a>,
 }
 
 #[embassy_executor::task]
-pub async fn sensor_loop(p: SensorPeripherals<'static>) {
-    // --- init RGB LED + тест при старте ---
-    let mut led = crate::led::RgbLed::new(p.led_r, p.led_g, p.led_b);
-    led.startup_test();
+pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
+    // --- тест RGB LED при старте ---
+    p.led.startup_test();
 
     // --- init BMP390 ---
     let spi_bus = crate::spi_helper::init_spi_bus(BarometerArgs {
@@ -209,7 +206,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
 
         // 6) обновляем RGB LED по уровню CO2
         if let Some(co2_val) = co2 {
-            led.set_co2(co2_val);
+            p.led.set_co2(co2_val);
         }
 
         // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
