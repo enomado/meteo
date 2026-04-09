@@ -34,7 +34,7 @@ pub type BarometerDevice<'a> = Bmp390<
 pub async fn get_barometer_spi<'a>(
     spi_bus: &'a Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>>,
     cs_pin: GPIO10<'a>,
-) -> BarometerDevice<'a> {
+) -> Option<BarometerDevice<'a>> {
     let cs_pin = Output::new(cs_pin, Level::High, OutputConfig::default());
     let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(spi_bus, cs_pin);
 
@@ -50,12 +50,16 @@ pub async fn get_barometer_spi<'a>(
     // Issue CMD=0xB6 and wait for `STATUS.cmd_rdy` (recommended default).
     // но не успевает законфигурироваться и молчит - циферки не меняет
 
-    let device: BarometerDevice<'a> =
-        Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut delay)
-            .await
-            .unwrap();
+    Timer::after(Duration::from_millis(150)).await;
 
-    device
+    match Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut delay).await {
+        Ok(device) => Some(device),
+        Err(err) => {
+            println!("BMP390: init failed: {:?}", err);
+            println!("BMP390: continuing without barometer");
+            None
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -111,8 +115,10 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         miso: p.spi_miso,
     });
     let mut barometer = get_barometer_spi(spi_bus, p.spi_cs).await;
-    let _data = barometer.read_sensor_data().await.unwrap();
-    println!("BMP390: init ok");
+    if let Some(ref mut barometer) = barometer {
+        let _data = barometer.read_sensor_data().await.unwrap();
+        println!("BMP390: init ok");
+    }
 
     // --- init SCD41 ---
     let i2c = I2c::new(
@@ -158,14 +164,16 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
             if let Ok(m) = scd.read_measurement().await {
                 // читаем BMP390 температуру (может быть не ready — тогда ждём)
                 let mut bmp_temp = None;
-                for _ in 0..10 {
-                    let status = barometer.read::<IntStatus>().await.unwrap();
-                    if status.drdy {
-                        let data = barometer.read_sensor_data().await.unwrap();
-                        bmp_temp = Some(data.temperature());
-                        break;
+                if let Some(ref mut barometer) = barometer {
+                    for _ in 0..10 {
+                        let status = barometer.read::<IntStatus>().await.unwrap();
+                        if status.drdy {
+                            let data = barometer.read_sensor_data().await.unwrap();
+                            bmp_temp = Some(data.temperature());
+                            break;
+                        }
+                        Timer::after(Duration::from_secs(2)).await;
                     }
-                    Timer::after(Duration::from_secs(2)).await;
                 }
                 if let Some(t_bmp) = bmp_temp {
                     let offset_old = scd.get_temperature_offset().await.unwrap_or(4.0);
@@ -200,13 +208,15 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         // 1) читаем BMP390 если готов
         let mut pressure = None;
         let mut baro_temp = None;
-        let status = barometer.read::<IntStatus>().await.unwrap();
-        if status.drdy {
-            let data = barometer.read_sensor_data().await.unwrap();
-            pressure = Some(data.pressure());
-            baro_temp = Some(data.temperature());
-            last_pressure_hpa = Some((data.pressure() / 100.0) as u16);
-            println!("BMP390: P={:.1} T={:.2}", data.pressure(), data.temperature());
+        if let Some(ref mut barometer) = barometer {
+            let status = barometer.read::<IntStatus>().await.unwrap();
+            if status.drdy {
+                let data = barometer.read_sensor_data().await.unwrap();
+                pressure = Some(data.pressure());
+                baro_temp = Some(data.temperature());
+                last_pressure_hpa = Some((data.pressure() / 100.0) as u16);
+                println!("BMP390: P={:.1} T={:.2}", data.pressure(), data.temperature());
+            }
         }
 
         // 2) скармливаем давление в SCD41 для компенсации CO2

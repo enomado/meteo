@@ -163,6 +163,20 @@ smoltcp = { version = "*", default-features = false, features = [
 [build-dependencies]
 toml = "*"
 
+# Vendored local esp-hal fork:
+# - upstream base: `015cc3a1` (`upstream/main` at sync time)
+# - local fork head: `3223a9cb` (`fix/phy-clock-ref-leak`, adds our PHY fix)
+[patch."https://github.com/esp-rs/esp-hal"]
+esp-hal = { path = "/home/sc/t/embed/esp-hal/esp-hal" }
+esp-alloc = { path = "/home/sc/t/embed/esp-hal/esp-alloc" }
+esp-sync = { path = "/home/sc/t/embed/esp-hal/esp-sync" }
+esp-bootloader-esp-idf = { path = "/home/sc/t/embed/esp-hal/esp-bootloader-esp-idf" }
+esp-radio = { path = "/home/sc/t/embed/esp-hal/esp-radio" }
+esp-println = { path = "/home/sc/t/embed/esp-hal/esp-println" }
+esp-backtrace = { path = "/home/sc/t/embed/esp-hal/esp-backtrace" }
+esp-rtos = { path = "/home/sc/t/embed/esp-hal/esp-rtos" }
+esp-phy = { path = "/home/sc/t/embed/esp-hal/esp-phy" }
+
 
 [features]
 esp32c3 = [

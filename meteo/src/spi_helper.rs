@@ -4,7 +4,8 @@ use embassy_sync::{
 };
 use esp_hal::{
     peripherals::{GPIO6, GPIO7, GPIO9, SPI2},
-    spi::{self, master::Spi},
+    spi::{Mode, master::{Config, Spi}},
+    time::Rate,
 };
 use esp_println::println;
 
@@ -20,7 +21,9 @@ pub fn init_spi_bus(
 ) -> &'static Mutex<NoopRawMutex, Spi<'static, esp_hal::Async>> {
     let spi_bus = Spi::new(
         args.spi2,
-        spi::master::Config::default(),
+        Config::default()
+            .with_frequency(Rate::from_khz(100))
+            .with_mode(Mode::_0),
     )
     .unwrap();
 

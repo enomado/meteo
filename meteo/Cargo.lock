@@ -816,7 +816,6 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "esp-alloc"
 version = "0.9.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "allocator-api2",
  "cfg-if",
@@ -831,7 +830,6 @@ dependencies = [
 [[package]]
 name = "esp-backtrace"
 version = "0.18.1"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "document-features",
@@ -846,7 +844,6 @@ dependencies = [
 [[package]]
 name = "esp-bootloader-esp-idf"
 version = "0.4.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "document-features",
@@ -862,7 +859,6 @@ dependencies = [
 [[package]]
 name = "esp-config"
 version = "0.6.1"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "document-features",
  "esp-metadata-generated",
@@ -874,7 +870,6 @@ dependencies = [
 [[package]]
 name = "esp-hal"
 version = "1.0.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "bitfield",
  "bitflags 2.11.0",
@@ -929,7 +924,6 @@ dependencies = [
 [[package]]
 name = "esp-hal-procmacros"
 version = "0.21.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "document-features",
  "proc-macro-crate",
@@ -942,12 +936,10 @@ dependencies = [
 [[package]]
 name = "esp-metadata-generated"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 
 [[package]]
 name = "esp-phy"
 version = "0.1.1"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "defmt 1.0.1",
@@ -964,7 +956,6 @@ dependencies = [
 [[package]]
 name = "esp-println"
 version = "0.16.1"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -977,7 +968,6 @@ dependencies = [
 [[package]]
 name = "esp-radio"
 version = "0.17.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "allocator-api2",
  "bt-hci",
@@ -1020,7 +1010,6 @@ dependencies = [
 [[package]]
 name = "esp-radio-rtos-driver"
 version = "0.2.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "esp-sync",
@@ -1030,7 +1019,6 @@ dependencies = [
 [[package]]
 name = "esp-riscv-rt"
 version = "0.13.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -1041,7 +1029,6 @@ dependencies = [
 [[package]]
 name = "esp-rom-sys"
 version = "0.1.3"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "document-features",
@@ -1052,7 +1039,6 @@ dependencies = [
 [[package]]
 name = "esp-rtos"
 version = "0.2.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "allocator-api2",
  "cfg-if",
@@ -1076,7 +1062,6 @@ dependencies = [
 [[package]]
 name = "esp-sync"
 version = "0.1.1"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "cfg-if",
  "defmt 1.0.1",
@@ -2411,7 +2396,6 @@ dependencies = [
 [[package]]
 name = "xtensa-lx"
 version = "0.13.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "critical-section",
 ]
@@ -2419,7 +2403,6 @@ dependencies = [
 [[package]]
 name = "xtensa-lx-rt"
 version = "0.21.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "defmt 1.0.1",
  "document-features",
@@ -2430,7 +2413,6 @@ dependencies = [
 [[package]]
 name = "xtensa-lx-rt-proc-macros"
 version = "0.5.0"
-source = "git+https://github.com/esp-rs/esp-hal?branch=main#015cc3a1cbc98c6cfc70c3477db0e9fbfaf5a875"
 dependencies = [
  "proc-macro2",
  "quote",
