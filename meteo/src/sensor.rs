@@ -110,7 +110,7 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         mosi: p.spi_mosi,
         miso: p.spi_miso,
     });
-    let mut barometer = get_barometer_spi(&spi_bus, p.spi_cs).await;
+    let mut barometer = get_barometer_spi(spi_bus, p.spi_cs).await;
     let _data = barometer.read_sensor_data().await.unwrap();
     println!("BMP390: init ok");
 

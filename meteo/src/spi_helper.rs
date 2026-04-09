@@ -15,7 +15,9 @@ pub struct BarometerArgs<'a> {
     pub spi2: SPI2<'a>,
 }
 
-pub fn init_spi_bus<'a>(args: BarometerArgs<'a>) -> Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>> {
+pub fn init_spi_bus(
+    args: BarometerArgs<'static>,
+) -> &'static Mutex<NoopRawMutex, Spi<'static, esp_hal::Async>> {
     let spi_bus = Spi::new(
         args.spi2,
         spi::master::Config::default(),
@@ -33,5 +35,5 @@ pub fn init_spi_bus<'a>(args: BarometerArgs<'a>) -> Mutex<NoopRawMutex, Spi<'a, 
 
     let spi_bus = spi_bus.into_async();
 
-    Mutex::<NoopRawMutex, _>::new(spi_bus)
+    crate::mk_static!(Mutex<NoopRawMutex, Spi<'static, esp_hal::Async>>, Mutex::new(spi_bus))
 }

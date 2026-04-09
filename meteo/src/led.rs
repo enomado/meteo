@@ -120,18 +120,23 @@ impl<'a> RgbLed<'a> {
 }
 
 /// CO2 ppm → (R%, G%, B%) в процентах 0-100
+///
+/// - 0-400: чистый зелёный
+/// - 400-700: зелёный → жёлтый
+/// - 700-1000: жёлтый → красный
+/// - 1000+: красный
 pub fn co2_to_rgb(co2: u16) -> (u8, u8, u8) {
     const MAX: u8 = 30;
 
     match co2 {
-        0..=700 => (0, MAX, 0),
-        701..=1000 => {
-            let ratio = ((co2 - 700) as f32) / 300.0;
+        0..=400 => (0, MAX, 0),
+        401..=700 => {
+            let ratio = ((co2 - 400) as f32) / 300.0;
             let red = (MAX as f32 * ratio) as u8;
             (red, MAX, 0)
         }
-        1001..=1500 => {
-            let ratio = ((co2 - 1000) as f32) / 500.0;
+        701..=1000 => {
+            let ratio = ((co2 - 700) as f32) / 300.0;
             let green = (MAX as f32 * (1.0 - ratio)) as u8;
             (MAX, green, 0)
         }

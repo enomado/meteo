@@ -117,8 +117,8 @@ async fn main(spawner: Spawner) -> ! {
 
     // CURRENT_OFFSET.init(1757985960);
 
-    spawner.spawn(net_task(runner)).ok();
-    spawner.spawn(connection(controller)).ok();
+    spawner.spawn(net_task(runner).unwrap());
+    spawner.spawn(connection(controller).unwrap());
 
     // --- RGB LED (LEDC PWM) на GPIO3=R, GPIO4=G, GPIO5=B ---
     use esp_hal::ledc::{self, LSGlobalClkSource, LowSpeed};
@@ -157,12 +157,12 @@ async fn main(spawner: Spawner) -> ! {
         i2c_sda: peripherals.GPIO1,
         i2c_scl: peripherals.GPIO2,
         led: rgb_led,
-    })).ok();
+    }).unwrap());
 
     let spawner_w = spawner.clone();
-    spawner.spawn(ntp_sync_loop(stack, spawner_w)).ok();
+    spawner.spawn(ntp_sync_loop(stack, spawner_w).unwrap());
 
-    spawner.spawn(network_send_loop(stack)).ok();
+    spawner.spawn(network_send_loop(stack).unwrap());
 
     loop {
         Timer::after(Duration::from_millis(5000)).await;

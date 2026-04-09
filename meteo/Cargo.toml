@@ -106,7 +106,7 @@ esp-backtrace = { git = "https://github.com/esp-rs/esp-hal", package = "esp-back
 
 embassy-sync = { version = "*" }
 embassy-embedded-hal = { version = "*" }
-embassy-executor = { version = "0.9", features = [
+embassy-executor = { version = "0.10", features = [
   # "defmt",
   # "task-arena-size-20480",
 ] }
