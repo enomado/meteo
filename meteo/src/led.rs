@@ -122,8 +122,10 @@ impl<'a> RgbLed<'a> {
         self.fade_to(r, g, b, 500);
     }
 
-    /// Тест при старте: плавные переливы R → G → B → W → off
-    pub fn startup_test(&mut self) {
+    /// Тест при старте: плавные переливы R → G → B → W → off.
+    /// async-версия: пауза через `Timer::after`, не блокирует executor —
+    /// параллельно стартуют wifi/ntp/sensor таски.
+    pub async fn startup_test(&mut self) {
         use esp_println::println;
 
         const D: u16 = 400;
@@ -140,7 +142,7 @@ impl<'a> RgbLed<'a> {
         for (r, g, b, name) in sequence {
             println!("LED test: {}", name);
             self.fade_to(r, g, b, D);
-            self.wait_fade();
+            Timer::after(Duration::from_millis(D as u64)).await;
         }
     }
 }
@@ -157,67 +159,165 @@ fn error_color(bit: u8) -> (u8, u8, u8) {
     }
 }
 
-/// Основной LED-таск: показывает CO2 пока статус чист, иначе циклит blink-коды
-#[embassy_executor::task]
-pub async fn led_loop(mut led: RgbLed<'static>) {
-    led.startup_test();
+/// Параметры breathing-пульса для повышенного CO2.
+/// `period_ms` — длительность полного цикла dim→bright→dim.
+/// `depth_pct` — насколько затемняется LED в нижней точке (0..100, где 100 = до полного off).
+#[derive(Clone, Copy)]
+struct PulseSpec {
+    period_ms: u16,
+    depth_pct: u8,
+}
 
-    loop {
-        let status = SYSTEM_STATUS.load(Ordering::Relaxed);
-
-        if status == 0 {
-            let co2 = LATEST_CO2.load(Ordering::Relaxed);
-            if co2 != u16::MAX {
-                led.set_co2(co2);
-            } else {
-                led.fade_to(0, 0, 0, 200);
-            }
-            Timer::after(Duration::from_millis(2000)).await;
-            continue;
-        }
-
-        // error mode: цикл по активным битам от 1× к 4×
-        for bit_idx in 0u8..4 {
-            let bit = 1u8 << bit_idx;
-            // перечитываем статус — если бит сняли пока крутились, скипаем
-            if SYSTEM_STATUS.load(Ordering::Relaxed) & bit == 0 {
-                continue;
-            }
-            let blinks = bit_idx + 1;
-            let (r, g, b) = error_color(bit);
-            for _ in 0..blinks {
-                led.set(r, g, b);
-                Timer::after(Duration::from_millis(180)).await;
-                led.set(0, 0, 0);
-                Timer::after(Duration::from_millis(220)).await;
-            }
-            // пауза между разными кодами
-            Timer::after(Duration::from_millis(700)).await;
-        }
-        // длинная пауза перед следующим полным циклом
-        Timer::after(Duration::from_millis(900)).await;
+/// CO2 → параметры пульса. `None` = статичный цвет (нормальная атмосфера).
+/// Чем выше CO2, тем быстрее и глубже дыхание.
+fn pulse_params(co2: u16) -> Option<PulseSpec> {
+    match co2 {
+        0..=999 => None,
+        1000..=1399 => Some(PulseSpec {
+            period_ms: 4000,
+            depth_pct: 35,
+        }),
+        1400..=1999 => Some(PulseSpec {
+            period_ms: 2200,
+            depth_pct: 55,
+        }),
+        2000..=2999 => Some(PulseSpec {
+            period_ms: 1400,
+            depth_pct: 75,
+        }),
+        _ => Some(PulseSpec {
+            period_ms: 900,
+            depth_pct: 90,
+        }),
     }
 }
 
-/// CO2 ppm → (R%, G%, B%) в процентах 0-100
+fn scale_rgb(rgb: (u8, u8, u8), pct_of_full: u8) -> (u8, u8, u8) {
+    let s = |c: u8| ((c as u16 * pct_of_full as u16) / 100) as u8;
+    (s(rgb.0), s(rgb.1), s(rgb.2))
+}
+
+/// Интервал между blink-overlay'ями ошибок поверх CO2-сигнала.
+/// Ошибки показываются регулярно, но не заглушают цвет/дыхание.
+const OVERLAY_INTERVAL_MS: u32 = 10_000;
+
+/// Сыграть blink-коды для активных бит из `only_bits` (приоритет по bit_idx).
+async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
+    for bit_idx in 0u8..4 {
+        let bit = 1u8 << bit_idx;
+        // перечитываем актуальный статус — бит мог погаснуть пока играли предыдущий
+        if SYSTEM_STATUS.load(Ordering::Relaxed) & only_bits & bit == 0 {
+            continue;
+        }
+        let blinks = bit_idx + 1;
+        let (r, g, b) = error_color(bit);
+        for _ in 0..blinks {
+            led.set(r, g, b);
+            Timer::after(Duration::from_millis(180)).await;
+            led.set(0, 0, 0);
+            Timer::after(Duration::from_millis(220)).await;
+        }
+        Timer::after(Duration::from_millis(700)).await;
+    }
+}
+
+/// Сыграть один CO2-step (статика 2 сек или один breathing-цикл).
+/// Возвращает фактически проведённое время в мс — для accumulated-таймера overlay.
+async fn play_co2_step(led: &mut RgbLed<'_>, co2: u16) -> u32 {
+    let bright = co2_to_rgb(co2);
+    match pulse_params(co2) {
+        None => {
+            led.fade_to(bright.0, bright.1, bright.2, 500);
+            Timer::after(Duration::from_millis(2000)).await;
+            2000
+        }
+        Some(p) => {
+            let dim = scale_rgb(bright, 100 - p.depth_pct);
+            let half = p.period_ms / 2;
+            // вдох
+            led.fade_to(bright.0, bright.1, bright.2, half);
+            Timer::after(Duration::from_millis(half as u64)).await;
+            // выдох
+            led.fade_to(dim.0, dim.1, dim.2, half);
+            Timer::after(Duration::from_millis(half as u64)).await;
+            p.period_ms as u32
+        }
+    }
+}
+
+/// Основной LED-таск. Единое правило:
+/// - boot: startup_test (R→G→B→W→off, ~2с, async)
+/// - есть CO2-данные → CO2 mode (цвет + breathing). Раз в `OVERLAY_INTERVAL_MS`
+///   поверх вставляется blink-overlay для всех активных ошибок.
+/// - нет CO2-данных (сенсор не пришёл / SYS_NO_PERIPH) → blink-only
+#[embassy_executor::task]
+pub async fn led_loop(mut led: RgbLed<'static>) {
+    led.startup_test().await;
+
+    let mut since_overlay_ms: u32 = 0;
+
+    loop {
+        let status = SYSTEM_STATUS.load(Ordering::Relaxed);
+        let co2 = LATEST_CO2.load(Ordering::Relaxed);
+        let has_co2 = co2 != u16::MAX && (status & SYS_NO_PERIPH) == 0;
+
+        if !has_co2 {
+            // CO2-канал нечем заполнять: играем blink активных бит
+            // (или просто ждём, если ошибок нет и мы ждём первое чтение).
+            led.fade_to(0, 0, 0, 200);
+            if status != 0 {
+                play_blink_codes(&mut led, status).await;
+            } else {
+                Timer::after(Duration::from_millis(2000)).await;
+            }
+            since_overlay_ms = 0;
+            continue;
+        }
+
+        // CO2 mode — основной канал, работает всегда когда есть данные.
+        since_overlay_ms += play_co2_step(&mut led, co2).await;
+
+        // Каждые ~OVERLAY_INTERVAL_MS вставляем blink-overlay всех активных ошибок.
+        // Перечитываем статус — бит мог появиться/исчезнуть пока играли CO2-step.
+        let status_now = SYSTEM_STATUS.load(Ordering::Relaxed);
+        if status_now != 0 && since_overlay_ms >= OVERLAY_INTERVAL_MS {
+            led.fade_to(0, 0, 0, 200);
+            Timer::after(Duration::from_millis(300)).await;
+            play_blink_codes(&mut led, status_now).await;
+            since_overlay_ms = 0;
+        }
+    }
+}
+
+/// CO2 ppm → (R%, G%, B%), яркость в долях `MAX`.
 ///
+/// Детализированная зона 400-700 — основная зона мониторинга проветривания.
 /// - 0-400: чистый зелёный
-/// - 400-700: зелёный → жёлтый
-/// - 700-1000: жёлтый → красный
-/// - 1000+: красный
+/// - 400-700: зелёный → жёлто-зелёный → жёлтый (мягкий gradient для тонкой оценки)
+/// - 700-1000: жёлтый → оранжевый
+/// - 1000-1500: оранжевый → красный (тут включается breathing pulse)
+/// - 1500+: чистый красный
 pub fn co2_to_rgb(co2: u16) -> (u8, u8, u8) {
     const MAX: u8 = 30;
 
     match co2 {
         0..=400 => (0, MAX, 0),
         401..=700 => {
-            let ratio = ((co2 - 400) as f32) / 300.0;
-            let red = (MAX as f32 * ratio) as u8;
+            // зелёный → жёлтый: красный канал поднимается линейно
+            let t = ((co2 - 400) as f32) / 300.0;
+            let red = (MAX as f32 * t) as u8;
             (red, MAX, 0)
         }
         701..=1000 => {
-            let ratio = ((co2 - 700) as f32) / 300.0;
-            let green = (MAX as f32 * (1.0 - ratio)) as u8;
+            // жёлтый → оранжевый: зелёный канал падает до половины
+            let t = ((co2 - 700) as f32) / 300.0;
+            let green = (MAX as f32 * (1.0 - 0.5 * t)) as u8;
+            (MAX, green, 0)
+        }
+        1001..=1500 => {
+            // оранжевый → красный: зелёный канал падает с половины до нуля
+            let t = ((co2 - 1000) as f32) / 500.0;
+            let green = (MAX as f32 * 0.5 * (1.0 - t)) as u8;
             (MAX, green, 0)
         }
         _ => (MAX, 0, 0),
