@@ -7,9 +7,7 @@ use heapless::Vec;
 use crate::led::{SYS_NO_TCP, SYS_NO_WIFI, clear_status, set_status};
 use crate::sensor::{SENSOR_QUE, SensorData};
 
-use aes_gcm::{
-    AeadInPlace, Aes128Gcm, KeyInit, Nonce,
-};
+use aes_gcm::{AeadInPlace, Aes128Gcm, KeyInit, Nonce};
 
 use postcard;
 

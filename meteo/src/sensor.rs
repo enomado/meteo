@@ -128,14 +128,28 @@ pub async fn get_barometer_spi<'a>(
     }
 }
 
+/// BMP390 одно показание — pressure (Pa) + temperature (°C). Поля всегда заполнены
+/// или отсутствуют синхронно (читаются одним вызовом read_sensor_data).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct BaroReading {
+    pub pressure: f32,
+    pub temp: f32,
+}
+
+/// SCD41 одно показание — CO2 (ppm), humidity (%), temperature (°C).
+/// Поля всегда заполнены или отсутствуют синхронно (один read_measurement).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ScdReading {
+    pub co2: u16,
+    pub humidity: f32,
+    pub temp: f32,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SensorData {
-    pub pressure: Option<f32>,
-    pub temp: Option<f32>,
-    pub co2: Option<u16>,
-    pub humidity: Option<f32>,
-    pub scd_temp: Option<f32>,
-    // millis epoch
+    pub baro: Option<BaroReading>,
+    pub scd: Option<ScdReading>,
+    /// millis epoch
     pub time: u64,
 }
 
@@ -241,20 +255,16 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
     let mut last_pressure_hpa: Option<u16> = None;
     loop {
         // 1) читаем BMP390 если готов
-        let mut pressure = None;
-        let mut baro_temp = None;
+        let mut baro: Option<BaroReading> = None;
         if let Some(ref mut barometer) = barometer {
             let status = barometer.read::<IntStatus>().await.unwrap();
             if status.drdy {
                 let data = barometer.read_sensor_data().await.unwrap();
-                pressure = Some(data.pressure());
-                baro_temp = Some(data.temperature());
-                last_pressure_hpa = Some((data.pressure() / 100.0) as u16);
-                println!(
-                    "BMP390: P={:.1} T={:.2}",
-                    data.pressure(),
-                    data.temperature()
-                );
+                let pressure = data.pressure();
+                let temp = data.temperature();
+                last_pressure_hpa = Some((pressure / 100.0) as u16);
+                println!("BMP390: P={:.1} T={:.2}", pressure, temp);
+                baro = Some(BaroReading { pressure, temp });
             }
         }
 
@@ -275,14 +285,9 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         wait_scd_ready(&mut scd).await;
 
         // 5) читаем SCD41
-        let mut co2 = None;
-        let mut humidity = None;
-        let mut scd_temp = None;
+        let mut scd_reading: Option<ScdReading> = None;
         match scd.read_measurement().await {
             Ok(m) => {
-                co2 = Some(m.co2);
-                humidity = Some(m.humidity);
-                scd_temp = Some(m.temperature);
                 println!(
                     "SCD41: CO2={} T={:.2} H={:.2}",
                     m.co2, m.temperature, m.humidity
@@ -291,6 +296,11 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
                 if barometer.is_some() {
                     clear_status(SYS_NO_PERIPH);
                 }
+                scd_reading = Some(ScdReading {
+                    co2: m.co2,
+                    humidity: m.humidity,
+                    temp: m.temperature,
+                });
             }
             Err(e) => {
                 println!("SCD41: read error: {:?}", e);
@@ -299,20 +309,17 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         }
 
         // 6) объединяем с одним timestamp
-        let time = get_current_time_epoch();
+        let co2_for_led = scd_reading.as_ref().map(|s| s.co2);
         let mdata = SensorData {
-            pressure,
-            temp: baro_temp,
-            co2,
-            humidity,
-            scd_temp,
-            time,
+            baro,
+            scd: scd_reading,
+            time: get_current_time_epoch(),
         };
         enqueue_sensor_data(mdata).await;
 
         // 7) публикуем CO2 для LED-таска
-        if let Some(co2_val) = co2 {
-            publish_co2(co2_val);
+        if let Some(c) = co2_for_led {
+            publish_co2(c);
         }
 
         // 8) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)

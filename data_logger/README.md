@@ -6,4 +6,4 @@ TCP-сервер для приёма зашифрованных данных с 
 
 ## SensorData
 
-Все поля данных (pressure, temp, co2, humidity) — `Option`, потому что отдельные датчики могут быть недоступны в момент измерения. Это согласовано во всех компонентах: firmware, data_logger, БД (nullable колонки), display_backend и frontend.
+Поля группируются по источнику: `Option<BaroReading{pressure,temp}>` для BMP390 и `Option<ScdReading{co2,humidity,temp}>` для SCD41 — поля одного датчика всегда читаются одним вызовом, поэтому либо все Some, либо все None. На входе в БД распаковывается обратно в плоские nullable колонки `sensor(pressure, temp, co2, humidity, scd_temp)` — display_backend/frontend схему не меняют.

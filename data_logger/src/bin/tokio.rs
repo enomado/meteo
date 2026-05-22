@@ -12,12 +12,22 @@ const ADDR: &str = "0.0.0.0:1234";
 const DB_CONN: &str = "host=/var/run/postgresql user=sc dbname=meteo";
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct BaroReading {
+    pub pressure: f32,
+    pub temp: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ScdReading {
+    pub co2: u16,
+    pub humidity: f32,
+    pub temp: f32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SensorData {
-    pub pressure: Option<f32>,
-    pub temp: Option<f32>,
-    pub co2: Option<u16>,
-    pub humidity: Option<f32>,
-    pub scd_temp: Option<f32>,
+    pub baro: Option<BaroReading>,
+    pub scd: Option<ScdReading>,
     // millis epoch
     pub time: u64,
 }
@@ -26,11 +36,11 @@ impl SensorData {
     fn convert(&self) -> ConvertedSensor {
         let dt = Utc.timestamp_millis_opt(self.time as i64).unwrap();
         ConvertedSensor {
-            pressure: self.pressure,
-            temp: self.temp,
-            co2: self.co2,
-            humidity: self.humidity,
-            scd_temp: self.scd_temp,
+            pressure: self.baro.as_ref().map(|b| b.pressure),
+            temp: self.baro.as_ref().map(|b| b.temp),
+            co2: self.scd.as_ref().map(|s| s.co2),
+            humidity: self.scd.as_ref().map(|s| s.humidity),
+            scd_temp: self.scd.as_ref().map(|s| s.temp),
             time: dt,
         }
     }
