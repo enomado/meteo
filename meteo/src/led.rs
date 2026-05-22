@@ -2,11 +2,14 @@ use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::DriveMode;
+use esp_hal::gpio::interconnect::PeripheralOutput;
 use esp_hal::ledc::{
-    LowSpeed,
+    self, LSGlobalClkSource, LowSpeed,
     channel::{self, ChannelIFace},
-    timer,
+    timer::{self, TimerIFace},
 };
+use esp_hal::peripherals::LEDC;
+use esp_hal::time::Rate;
 
 // --- System status bits (bit_idx+1 = число миганий) ---
 pub const SYS_BUF_OVERFLOW: u8 = 1 << 0; // 1× — буфер переполнен
@@ -38,6 +41,30 @@ pub struct RgbLed<'a> {
     cur_r: u8,
     cur_g: u8,
     cur_b: u8,
+}
+
+/// Поднимает LEDC-таймер (5 кГц, 8-bit duty, APB-clock) и собирает RgbLed на трёх каналах.
+/// Шаринг `ledc_inst`/`timer0` через mk_static (StaticCell) — функция предполагает однократный вызов.
+pub fn init_rgb_led(
+    ledc_per: LEDC<'static>,
+    r_pin: impl PeripheralOutput<'static>,
+    g_pin: impl PeripheralOutput<'static>,
+    b_pin: impl PeripheralOutput<'static>,
+) -> RgbLed<'static> {
+    let ledc_inst = crate::mk_static!(ledc::Ledc<'static>, ledc::Ledc::new(ledc_per));
+    ledc_inst.set_global_slow_clock(LSGlobalClkSource::APBClk);
+
+    let mut timer0 = ledc_inst.timer::<LowSpeed>(timer::Number::Timer0);
+    timer0
+        .configure(timer::config::Config {
+            duty: timer::config::Duty::Duty8Bit,
+            clock_source: timer::LSClockSource::APBClk,
+            frequency: Rate::from_hz(5000),
+        })
+        .unwrap();
+    let timer0 = crate::mk_static!(timer::Timer<'static, LowSpeed>, timer0);
+
+    RgbLed::new(ledc_inst, timer0, r_pin, g_pin, b_pin)
 }
 
 impl<'a> RgbLed<'a> {
@@ -101,14 +128,6 @@ impl<'a> RgbLed<'a> {
         self.cur_r = r;
         self.cur_g = g;
         self.cur_b = b;
-    }
-
-    /// Ждать завершения fade
-    pub fn wait_fade(&self) {
-        while self.r.is_duty_fade_running()
-            || self.g.is_duty_fade_running()
-            || self.b.is_duty_fade_running()
-        {}
     }
 
     /// CO2 уровень → плавный RGB
@@ -289,6 +308,16 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
     }
 }
 
+/// Линейная интерполяция в u8: a→b по t∈[0,1].
+fn lerp(a: f32, b: f32, t: f32) -> u8 {
+    (a + (b - a) * t) as u8
+}
+
+/// Параметр t∈[0,1] для co2 в отрезке [lo, hi].
+fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
+    ((co2 - lo) as f32) / ((hi - lo) as f32)
+}
+
 /// CO2 ppm → (R%, G%, B%), яркость в долях `MAX`.
 ///
 /// Детализированная зона 400-700 — основная зона мониторинга проветривания.
@@ -299,27 +328,16 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
 /// - 1500+: чистый красный
 pub fn co2_to_rgb(co2: u16) -> (u8, u8, u8) {
     const MAX: u8 = 30;
+    let m = MAX as f32;
 
     match co2 {
         0..=400 => (0, MAX, 0),
-        401..=700 => {
-            // зелёный → жёлтый: красный канал поднимается линейно
-            let t = ((co2 - 400) as f32) / 300.0;
-            let red = (MAX as f32 * t) as u8;
-            (red, MAX, 0)
-        }
-        701..=1000 => {
-            // жёлтый → оранжевый: зелёный канал падает до половины
-            let t = ((co2 - 700) as f32) / 300.0;
-            let green = (MAX as f32 * (1.0 - 0.5 * t)) as u8;
-            (MAX, green, 0)
-        }
-        1001..=1500 => {
-            // оранжевый → красный: зелёный канал падает с половины до нуля
-            let t = ((co2 - 1000) as f32) / 500.0;
-            let green = (MAX as f32 * 0.5 * (1.0 - t)) as u8;
-            (MAX, green, 0)
-        }
+        // зелёный → жёлтый: красный канал поднимается 0 → MAX
+        401..=700 => (lerp(0.0, m, segment_t(co2, 400, 700)), MAX, 0),
+        // жёлтый → оранжевый: зелёный канал падает MAX → MAX/2
+        701..=1000 => (MAX, lerp(m, m * 0.5, segment_t(co2, 700, 1000)), 0),
+        // оранжевый → красный: зелёный канал падает MAX/2 → 0
+        1001..=1500 => (MAX, lerp(m * 0.5, 0.0, segment_t(co2, 1000, 1500)), 0),
         _ => (MAX, 0, 0),
     }
 }

@@ -1,58 +1,35 @@
 #![no_std]
 #![no_main]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-// #![feature(type_alias_impl_trait)]
 
-use esp_hal::interrupt::software::{SoftwareInterrupt, SoftwareInterruptControl};
+use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
 
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_time::{Duration, Timer};
 
-// если принтлн то будет плакать если не закомментить
-// use defmt as _;
-
-// duplicate symbol, because it defined in esp-hal?
-// если defmt выключен то это просто затычка чтобы линкер не плакал
-// use defmt_rtt as _;
-
 use esp_println as _;
 
-//
 use esp_backtrace as _;
 
 use esp_alloc as _;
-// use esp_preempt as _;
 
-use esp_radio::wifi::{Config, ControllerConfig, WifiController, sta::StationConfig};
+use esp_radio::wifi::{Config, ControllerConfig, sta::StationConfig};
 use esp_rtos as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-use embassy_sync::mutex::Mutex;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
-use embassy_time::Delay;
 use meteo::mk_static;
 use meteo::ntp_client::ntp_sync_loop;
 use meteo::{
     network::{connection, net_task, network_send_loop},
-    ntp_client::CURRENT_OFFSET,
     sensor::{SensorPeripherals, sensor_loop},
 };
-
-use embassy_executor::raw::Executor;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    // defmt::init?
-    // esp_println::logger::init_logger_from_env();
-
-    // let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::default());
 
     let peripherals = esp_hal::init(config);
@@ -64,11 +41,7 @@ async fn main(spawner: Spawner) -> ! {
     let software_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, software_interrupt.software_interrupt0);
 
-    // peripherals.RNG
-    let mut rng = Rng::new();
-
-    // let esp_radio_ctrl = init_esp_radio();
-    // let esp_radio_ctrl = &*mk_static!(WifiController<'static>, esp_radio::init().unwrap());
+    let rng = Rng::new();
 
     let station_config = Config::Station(
         StationConfig::default()
@@ -84,21 +57,10 @@ async fn main(spawner: Spawner) -> ! {
 
     let wifi_interface = esp_radio::wifi::Interface::station();
 
-    // {
-    //         let timg1 = TimerGroup::new(peripherals.TIMG1);
-    //         esp_hal_embassy::init(timg1.timer0);
-    // }
-    {
-        use esp_hal::timer::systimer::SystemTimer;
-        let systimer = SystemTimer::new(peripherals.SYSTIMER);
-        // esp_rtos::start(systimer.alarm0);
-    }
-
     let config = embassy_net::Config::dhcpv4(Default::default());
 
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
-    // Init network stack
     let (stack, runner) = embassy_net::new(
         wifi_interface,
         config,
@@ -106,37 +68,16 @@ async fn main(spawner: Spawner) -> ! {
         seed,
     );
 
-    // CURRENT_OFFSET.init(1757985960);
-
     spawner.spawn(net_task(runner).unwrap());
     spawner.spawn(connection(controller).unwrap());
 
     // --- RGB LED (LEDC PWM) на GPIO3=R, GPIO4=G, GPIO5=B ---
-    use esp_hal::ledc::timer::{self as ledc_timer, TimerIFace};
-    use esp_hal::ledc::{self, LSGlobalClkSource, LowSpeed};
-    use esp_hal::time::Rate;
-
-    let ledc_inst = mk_static!(ledc::Ledc<'static>, ledc::Ledc::new(peripherals.LEDC));
-    ledc_inst.set_global_slow_clock(LSGlobalClkSource::APBClk);
-
-    let mut timer0 = ledc_inst.timer::<LowSpeed>(ledc_timer::Number::Timer0);
-    timer0
-        .configure(ledc_timer::config::Config {
-            duty: ledc_timer::config::Duty::Duty8Bit,
-            clock_source: ledc_timer::LSClockSource::APBClk,
-            frequency: Rate::from_hz(5000),
-        })
-        .unwrap();
-    let timer0 = mk_static!(ledc_timer::Timer<'static, LowSpeed>, timer0);
-
-    let rgb_led = meteo::led::RgbLed::new(
-        ledc_inst,
-        timer0,
+    let rgb_led = meteo::led::init_rgb_led(
+        peripherals.LEDC,
         peripherals.GPIO3,
         peripherals.GPIO4,
         peripherals.GPIO5,
     );
-
     spawner.spawn(meteo::led::led_loop(rgb_led).unwrap());
 
     spawner.spawn(
@@ -153,8 +94,7 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap(),
     );
 
-    let spawner_w = spawner.clone();
-    spawner.spawn(ntp_sync_loop(stack, spawner_w).unwrap());
+    spawner.spawn(ntp_sync_loop(stack).unwrap());
 
     spawner.spawn(network_send_loop(stack).unwrap());
 

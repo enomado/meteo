@@ -7,7 +7,6 @@ use esp_hal::{
     },
     time::Rate,
 };
-use esp_println::println;
 
 pub struct BarometerArgs<'a> {
     pub clk: GPIO7<'a>,
@@ -25,18 +24,11 @@ pub fn init_spi_bus(
             .with_frequency(Rate::from_khz(100))
             .with_mode(Mode::_0),
     )
-    .unwrap();
-
-    println!("spi2");
-
-    let spi_bus = spi_bus
-        .with_sck(args.clk)
-        .with_mosi(args.mosi)
-        .with_miso(args.miso);
-
-    println!("spi22");
-
-    let spi_bus = spi_bus.into_async();
+    .unwrap()
+    .with_sck(args.clk)
+    .with_mosi(args.mosi)
+    .with_miso(args.miso)
+    .into_async();
 
     crate::mk_static!(Mutex<NoopRawMutex, Spi<'static, esp_hal::Async>>, Mutex::new(spi_bus))
 }

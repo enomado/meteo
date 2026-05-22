@@ -32,6 +32,71 @@ pub type BarometerDevice<'a> = Bmp390<
     >,
 >;
 
+pub type ScdDevice<'a> = Scd4x<I2c<'a, esp_hal::Async>, Delay>;
+
+/// Поллит `data_ready` раз в секунду до Ok(true).
+/// Возвращает `false`, если поллинг был прерван ошибкой шины.
+async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
+    loop {
+        Timer::after(Duration::from_secs(1)).await;
+        match scd.data_ready().await {
+            Ok(true) => return true,
+            Ok(false) => continue,
+            Err(e) => {
+                println!("SCD41: data_ready error: {:?}", e);
+                return false;
+            }
+        }
+    }
+}
+
+/// Калибровка SCD41 temperature offset по показанию BMP390.
+/// Делает single-shot SCD41, ждёт drdy на барометре, считает дельту и пишет новый offset.
+/// Если барометра нет / он не отдал данные — offset не трогаем.
+async fn calibrate_temp_offset(
+    scd: &mut ScdDevice<'_>,
+    barometer: Option<&mut BarometerDevice<'_>>,
+) {
+    if let Err(e) = scd.measure_single_shot().await {
+        println!("SCD41 cal: single shot error: {:?}", e);
+        return;
+    }
+    if !wait_scd_ready(scd).await {
+        return;
+    }
+    let Ok(m) = scd.read_measurement().await else {
+        return;
+    };
+
+    // BMP390 температура — ждём до 10 попыток по 2 сек.
+    let mut bmp_temp = None;
+    if let Some(barometer) = barometer {
+        for _ in 0..10 {
+            let status = barometer.read::<IntStatus>().await.unwrap();
+            if status.drdy {
+                let data = barometer.read_sensor_data().await.unwrap();
+                bmp_temp = Some(data.temperature());
+                break;
+            }
+            Timer::after(Duration::from_secs(2)).await;
+        }
+    }
+
+    let Some(t_bmp) = bmp_temp else {
+        println!("SCD41 cal: BMP390 not ready, skipping temp offset");
+        return;
+    };
+
+    let offset_old = scd.get_temperature_offset().await.unwrap_or(4.0);
+    // offset не может быть отрицательным (ограничение датчика).
+    let offset_new = (m.temperature - t_bmp + offset_old).max(0.0);
+    println!(
+        "SCD41 cal: T_scd={:.2} T_bmp={:.2} offset {:.2} -> {:.2}",
+        m.temperature, t_bmp, offset_old, offset_new
+    );
+    let _ = scd.set_temperature_offset(offset_new).await;
+}
+
 pub async fn get_barometer_spi<'a>(
     spi_bus: &'a Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>>,
     cs_pin: GPIO10<'a>,
@@ -105,17 +170,27 @@ pub struct SensorPeripherals<'a> {
 }
 
 #[embassy_executor::task]
-pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
+pub async fn sensor_loop(p: SensorPeripherals<'static>) {
+    let SensorPeripherals {
+        spi2,
+        spi_clk,
+        spi_mosi,
+        spi_miso,
+        spi_cs,
+        i2c0,
+        i2c_sda,
+        i2c_scl,
+    } = p;
+
     // --- init BMP390 ---
     let spi_bus = crate::spi_helper::init_spi_bus(BarometerArgs {
-        spi2: p.spi2,
-        clk: p.spi_clk,
-        mosi: p.spi_mosi,
-        miso: p.spi_miso,
+        spi2,
+        clk: spi_clk,
+        mosi: spi_mosi,
+        miso: spi_miso,
     });
-    let mut barometer = get_barometer_spi(spi_bus, p.spi_cs).await;
-    if let Some(ref mut barometer) = barometer {
-        let _data = barometer.read_sensor_data().await.unwrap();
+    let mut barometer = get_barometer_spi(spi_bus, spi_cs).await;
+    if barometer.is_some() {
         println!("BMP390: init ok");
     } else {
         set_status(SYS_NO_PERIPH);
@@ -123,12 +198,12 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
 
     // --- init SCD41 ---
     let i2c = I2c::new(
-        p.i2c0,
+        i2c0,
         I2cConfig::default().with_frequency(Rate::from_khz(100)),
     )
     .unwrap()
-    .with_sda(p.i2c_sda)
-    .with_scl(p.i2c_scl)
+    .with_sda(i2c_sda)
+    .with_scl(i2c_scl)
     .into_async();
 
     let mut scd = Scd4x::new(i2c, Delay);
@@ -150,52 +225,7 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         }
     }
 
-    // --- калибровка temperature offset по BMP390 ---
-    // делаем одно измерение SCD41, сравниваем с BMP390, корректируем offset
-    {
-        // запускаем single-shot для калибровочного замера
-        if let Err(e) = scd.measure_single_shot().await {
-            println!("SCD41 cal: single shot error: {:?}", e);
-        } else {
-            // ждём данные
-            loop {
-                Timer::after(Duration::from_secs(1)).await;
-                match scd.data_ready().await {
-                    Ok(true) => break,
-                    Ok(false) => continue,
-                    Err(_) => break,
-                }
-            }
-            if let Ok(m) = scd.read_measurement().await {
-                // читаем BMP390 температуру (может быть не ready — тогда ждём)
-                let mut bmp_temp = None;
-                if let Some(ref mut barometer) = barometer {
-                    for _ in 0..10 {
-                        let status = barometer.read::<IntStatus>().await.unwrap();
-                        if status.drdy {
-                            let data = barometer.read_sensor_data().await.unwrap();
-                            bmp_temp = Some(data.temperature());
-                            break;
-                        }
-                        Timer::after(Duration::from_secs(2)).await;
-                    }
-                }
-                if let Some(t_bmp) = bmp_temp {
-                    let offset_old = scd.get_temperature_offset().await.unwrap_or(4.0);
-                    let offset_new = m.temperature - t_bmp + offset_old;
-                    // offset не может быть отрицательным (ограничение датчика)
-                    let offset_new = if offset_new < 0.0 { 0.0 } else { offset_new };
-                    println!(
-                        "SCD41 cal: T_scd={:.2} T_bmp={:.2} offset {:.2} -> {:.2}",
-                        m.temperature, t_bmp, offset_old, offset_new
-                    );
-                    let _ = scd.set_temperature_offset(offset_new).await;
-                } else {
-                    println!("SCD41 cal: BMP390 not ready, skipping temp offset");
-                }
-            }
-        }
-    }
+    calibrate_temp_offset(&mut scd, barometer.as_mut()).await;
 
     // --- проверяем ASC ---
     match scd.get_automatic_self_calibration().await {
@@ -242,17 +272,7 @@ pub async fn sensor_loop(mut p: SensorPeripherals<'static>) {
         }
 
         // 4) ждём data_ready от SCD41
-        loop {
-            Timer::after(Duration::from_secs(1)).await;
-            match scd.data_ready().await {
-                Ok(true) => break,
-                Ok(false) => continue,
-                Err(e) => {
-                    println!("SCD41: data_ready error: {:?}", e);
-                    break;
-                }
-            }
-        }
+        wait_scd_ready(&mut scd).await;
 
         // 5) читаем SCD41
         let mut co2 = None;

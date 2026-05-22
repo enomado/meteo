@@ -5,7 +5,6 @@ use sntpc_time_embassy::EmbassyTimestampGenerator;
 
 use core::net::{IpAddr, SocketAddr};
 
-use embassy_executor::Spawner;
 use embassy_net::{
     Stack,
     udp::{PacketMetadata, UdpSocket},
@@ -19,6 +18,10 @@ use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_println::println;
 
 const NTP_SERVER: &str = "pool.ntp.org";
+const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
+const NTP_RETRY_DELAY: Duration = Duration::from_secs(5);
+const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
+
 // CURRENT_OFFSET = wall-clock-at-boot в микросекундах от UNIX epoch.
 // epoch_now = Instant::now() (с момента boot) + CURRENT_OFFSET.
 // Initial value — baked-in default до первого успешного NTP-sync.
@@ -26,7 +29,7 @@ pub static CURRENT_OFFSET: Mutex<CriticalSectionRawMutex, i64> = Mutex::new(1757
 
 pub fn get_current_time_epoch() -> u64 {
     let instant = Instant::now();
-    let ntp_offset = CURRENT_OFFSET.lock(|s| s.clone()) / 1000;
+    let ntp_offset = CURRENT_OFFSET.lock(|s| *s) / 1000;
     instant.as_millis() + ntp_offset as u64
 }
 
@@ -78,51 +81,42 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
 pub static CLOCK_IS_SYNCED_WATCH: Watch<CriticalSectionRawMutex, bool, 2> = Watch::new();
 // MultiWakerRegistration
 
+/// Одна попытка NTP-запроса с таймаутом. На успехе обновляет CURRENT_OFFSET.
+async fn try_sync(stack: Stack<'_>) -> bool {
+    println!("checking time");
+
+    let res = match with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack)).await {
+        Ok(inner) => inner,
+        Err(_) => {
+            println!("ntp: timeout!");
+            return false;
+        }
+    };
+
+    let Some(pp) = res else { return false };
+
+    let off = pp.offset() as i64;
+    unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
+    true
+}
+
 #[embassy_executor::task]
-pub async fn ntp_sync_loop(stack: Stack<'static>, spawner: Spawner) {
-    //
+pub async fn ntp_sync_loop(stack: Stack<'static>) {
     stack.wait_link_up().await;
     stack.wait_config_up().await;
 
     let flag_sender = CLOCK_IS_SYNCED_WATCH.sender();
 
-    loop {
-        println!("checking time");
-
-        let p = with_timeout(Duration::from_secs(7), ntp_sync(stack)).await;
-
-        if p.is_err() {
-            println!("ntp: timeout!");
-        }
-
-        let p = p.ok().and_then(|s| s);
-
-        if let Some(pp) = p {
-            let off = pp.offset() as i64;
-            unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
-
-            flag_sender.send(true);
-            break;
-        }
-
-        Timer::after(Duration::from_secs(5)).await;
+    // Первый sync блокирует консьюмеров (sensor_loop ждёт CLOCK_IS_SYNCED_WATCH);
+    // пока не получится — ретрай каждые NTP_RETRY_DELAY.
+    while !try_sync(stack).await {
+        Timer::after(NTP_RETRY_DELAY).await;
     }
+    flag_sender.send(true);
 
-    // после синхронизации — периодическая подстройка
+    // Подстройка — раз в NTP_RESYNC_INTERVAL, ошибки игнорим до следующей итерации.
     loop {
-        Timer::after(Duration::from_millis(1000_000)).await;
-
-        println!("checking time");
-
-        let p = with_timeout(Duration::from_secs(7), ntp_sync(stack)).await;
-
-        if p.is_err() {
-            println!("ntp: timeout!");
-        }
-
-        if let Some(pp) = p.ok().and_then(|s| s) {
-            let off = pp.offset() as i64;
-            unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
-        }
+        Timer::after(NTP_RESYNC_INTERVAL).await;
+        let _ = try_sync(stack).await;
     }
 }

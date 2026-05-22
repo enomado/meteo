@@ -50,15 +50,14 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
 }
 
 pub async fn get_sensor_data_chunk() -> heapless::Vec<SensorData, 40> {
-    let mut p = SENSOR_QUE.try_lock().ok();
-
     let mut out = heapless::Vec::<_, 40>::new();
+    let Ok(mut p) = SENSOR_QUE.try_lock() else {
+        return out;
+    };
 
-    let Some(mut p) = p else { return out };
-
-    for _ in 0..40 {
-        if let Some(v) = p.dequeue() {
-            out.push(v).unwrap();
+    while let Some(v) = p.dequeue() {
+        if out.push(v).is_err() {
+            break;
         }
     }
 
@@ -131,33 +130,6 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 
         Timer::after(Duration::from_millis(3000)).await;
     }
-}
-
-#[allow(dead_code)]
-async fn write_packet_simple(
-    socket: &mut TcpSocket<'_>,
-    p: heapless::Vec<SensorData, 40>,
-) -> Result<usize, embassy_net::tcp::Error> {
-    let mut body_buf = [0; 1024];
-
-    println!("{:?}", &p);
-    let payload_len = {
-        let payload_buf = &mut body_buf[4..];
-        let data_serialized = postcard::to_slice(p.as_slice(), payload_buf).unwrap();
-        data_serialized.len()
-    };
-
-    let len_bytes = (payload_len as u32).to_be_bytes();
-    body_buf[..4].copy_from_slice(&len_bytes);
-
-    // реально полезная длина: 4 байта длины + payload_len
-    let total_len = 4 + payload_len;
-
-    // пишем только полезную часть
-    let to_write = &body_buf[..total_len];
-
-    let r = socket.write(&to_write).await;
-    r
 }
 
 pub async fn write_packet(
