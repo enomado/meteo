@@ -4,6 +4,7 @@ use esp_radio::wifi::{Interface, WifiController};
 
 use heapless::Vec;
 
+use crate::led::{SYS_NO_TCP, SYS_NO_WIFI, clear_status, set_status};
 use crate::sensor::{SENSOR_QUE, SensorData};
 
 use aes_gcm::{
@@ -28,11 +29,14 @@ pub async fn connection(mut controller: WifiController<'static>) {
         match controller.connect_async().await {
             Ok(info) => {
                 println!("Wifi connected to {:?}", info);
+                clear_status(SYS_NO_WIFI);
                 let info = controller.wait_for_disconnect_async().await.ok();
                 println!("Disconnected: {:?}", info);
+                set_status(SYS_NO_WIFI);
             }
             Err(e) => {
                 println!("Failed to connect to wifi: {:?}", e);
+                set_status(SYS_NO_WIFI);
             }
         }
 
@@ -83,11 +87,13 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         let r = socket.connect(remote_endpoint).await;
         if let Err(e) = r {
             println!("connect error: {:?}", e);
+            set_status(SYS_NO_TCP);
             Timer::after(Duration::from_millis(5000)).await;
             continue;
         }
 
         println!("connected!");
+        clear_status(SYS_NO_TCP);
 
         let mut noonce = 0u64;
 
@@ -114,6 +120,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                 }
                 Err(e) => {
                     println!("write error: {:?}", e);
+                    set_status(SYS_NO_TCP);
                     Timer::after(Duration::from_millis(3000)).await;
                     break;
                 }

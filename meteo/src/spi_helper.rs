@@ -1,10 +1,10 @@
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    mutex::Mutex,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use esp_hal::{
     peripherals::{GPIO6, GPIO7, GPIO9, SPI2},
-    spi::{Mode, master::{Config, Spi}},
+    spi::{
+        Mode,
+        master::{Config, Spi},
+    },
     time::Rate,
 };
 use esp_println::println;

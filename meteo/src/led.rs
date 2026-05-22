@@ -1,9 +1,35 @@
+use portable_atomic::{AtomicU8, AtomicU16, Ordering};
+
+use embassy_time::{Duration, Timer};
 use esp_hal::gpio::DriveMode;
 use esp_hal::ledc::{
     LowSpeed,
     channel::{self, ChannelIFace},
     timer,
 };
+
+// --- System status bits (bit_idx+1 = число миганий) ---
+pub const SYS_BUF_OVERFLOW: u8 = 1 << 0; // 1× — буфер переполнен
+pub const SYS_NO_TCP: u8 = 1 << 1; // 2× — нет TCP/сервера
+pub const SYS_NO_PERIPH: u8 = 1 << 2; // 3× — нет периферии (BMP390/SCD41)
+pub const SYS_NO_WIFI: u8 = 1 << 3; // 4× — нет WiFi/NTP
+
+pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
+
+/// u16::MAX = «данных ещё нет», LED светит off в normal mode
+pub static LATEST_CO2: AtomicU16 = AtomicU16::new(u16::MAX);
+
+pub fn set_status(bits: u8) {
+    SYSTEM_STATUS.fetch_or(bits, Ordering::Relaxed);
+}
+
+pub fn clear_status(bits: u8) {
+    SYSTEM_STATUS.fetch_and(!bits, Ordering::Relaxed);
+}
+
+pub fn publish_co2(co2: u16) {
+    LATEST_CO2.store(co2, Ordering::Relaxed);
+}
 
 pub struct RgbLed<'a> {
     r: channel::Channel<'a, LowSpeed>,
@@ -116,6 +142,60 @@ impl<'a> RgbLed<'a> {
             self.fade_to(r, g, b, D);
             self.wait_fade();
         }
+    }
+}
+
+/// Цвет blink-кода ошибки (в процентах яркости)
+fn error_color(bit: u8) -> (u8, u8, u8) {
+    const B: u8 = 40;
+    match bit {
+        SYS_BUF_OVERFLOW => (B, B / 2, 0), // оранжевый — warning
+        SYS_NO_TCP => (0, 0, B),           // синий — нет сервера
+        SYS_NO_PERIPH => (B, 0, B),        // фиолетовый — нет периферии
+        SYS_NO_WIFI => (B, B, 0),          // жёлтый — нет wifi/ntp
+        _ => (B, 0, 0),
+    }
+}
+
+/// Основной LED-таск: показывает CO2 пока статус чист, иначе циклит blink-коды
+#[embassy_executor::task]
+pub async fn led_loop(mut led: RgbLed<'static>) {
+    led.startup_test();
+
+    loop {
+        let status = SYSTEM_STATUS.load(Ordering::Relaxed);
+
+        if status == 0 {
+            let co2 = LATEST_CO2.load(Ordering::Relaxed);
+            if co2 != u16::MAX {
+                led.set_co2(co2);
+            } else {
+                led.fade_to(0, 0, 0, 200);
+            }
+            Timer::after(Duration::from_millis(2000)).await;
+            continue;
+        }
+
+        // error mode: цикл по активным битам от 1× к 4×
+        for bit_idx in 0u8..4 {
+            let bit = 1u8 << bit_idx;
+            // перечитываем статус — если бит сняли пока крутились, скипаем
+            if SYSTEM_STATUS.load(Ordering::Relaxed) & bit == 0 {
+                continue;
+            }
+            let blinks = bit_idx + 1;
+            let (r, g, b) = error_color(bit);
+            for _ in 0..blinks {
+                led.set(r, g, b);
+                Timer::after(Duration::from_millis(180)).await;
+                led.set(0, 0, 0);
+                Timer::after(Duration::from_millis(220)).await;
+            }
+            // пауза между разными кодами
+            Timer::after(Duration::from_millis(700)).await;
+        }
+        // длинная пауза перед следующим полным циклом
+        Timer::after(Duration::from_millis(900)).await;
     }
 }
 

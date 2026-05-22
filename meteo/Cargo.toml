@@ -16,6 +16,7 @@ bmp390-rs = { version = "*" }
 libscd = { version = "*", default-features = false, features = ["async", "scd4x", "scd41"] }
 
 heapless = { version = "*", features = ["portable-atomic"] }
+portable-atomic = { version = "*" }
 serde = { version = "*", default-features = false, features = ["derive"] }
 postcard = { version = "*" }
 aes-gcm = { version = "*", default-features = false, features = [

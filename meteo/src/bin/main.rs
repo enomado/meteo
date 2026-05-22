@@ -121,22 +121,21 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(connection(controller).unwrap());
 
     // --- RGB LED (LEDC PWM) на GPIO3=R, GPIO4=G, GPIO5=B ---
-    use esp_hal::ledc::{self, LSGlobalClkSource, LowSpeed};
     use esp_hal::ledc::timer::{self as ledc_timer, TimerIFace};
+    use esp_hal::ledc::{self, LSGlobalClkSource, LowSpeed};
     use esp_hal::time::Rate;
 
-    let ledc_inst = mk_static!(
-        ledc::Ledc<'static>,
-        ledc::Ledc::new(peripherals.LEDC)
-    );
+    let ledc_inst = mk_static!(ledc::Ledc<'static>, ledc::Ledc::new(peripherals.LEDC));
     ledc_inst.set_global_slow_clock(LSGlobalClkSource::APBClk);
 
     let mut timer0 = ledc_inst.timer::<LowSpeed>(ledc_timer::Number::Timer0);
-    timer0.configure(ledc_timer::config::Config {
-        duty: ledc_timer::config::Duty::Duty8Bit,
-        clock_source: ledc_timer::LSClockSource::APBClk,
-        frequency: Rate::from_hz(5000),
-    }).unwrap();
+    timer0
+        .configure(ledc_timer::config::Config {
+            duty: ledc_timer::config::Duty::Duty8Bit,
+            clock_source: ledc_timer::LSClockSource::APBClk,
+            frequency: Rate::from_hz(5000),
+        })
+        .unwrap();
     let timer0 = mk_static!(ledc_timer::Timer<'static, LowSpeed>, timer0);
 
     let rgb_led = meteo::led::RgbLed::new(
@@ -147,17 +146,21 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO5,
     );
 
-    spawner.spawn(sensor_loop(SensorPeripherals {
-        spi2: peripherals.SPI2,
-        spi_clk: peripherals.GPIO7,
-        spi_mosi: peripherals.GPIO6,
-        spi_miso: peripherals.GPIO9,
-        spi_cs: peripherals.GPIO10,
-        i2c0: peripherals.I2C0,
-        i2c_sda: peripherals.GPIO1,
-        i2c_scl: peripherals.GPIO2,
-        led: rgb_led,
-    }).unwrap());
+    spawner.spawn(meteo::led::led_loop(rgb_led).unwrap());
+
+    spawner.spawn(
+        sensor_loop(SensorPeripherals {
+            spi2: peripherals.SPI2,
+            spi_clk: peripherals.GPIO7,
+            spi_mosi: peripherals.GPIO6,
+            spi_miso: peripherals.GPIO9,
+            spi_cs: peripherals.GPIO10,
+            i2c0: peripherals.I2C0,
+            i2c_sda: peripherals.GPIO1,
+            i2c_scl: peripherals.GPIO2,
+        })
+        .unwrap(),
+    );
 
     let spawner_w = spawner.clone();
     spawner.spawn(ntp_sync_loop(stack, spawner_w).unwrap());
