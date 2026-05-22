@@ -8,8 +8,7 @@ use crate::led::{SYS_NO_TCP, SYS_NO_WIFI, clear_status, set_status};
 use crate::sensor::{SENSOR_QUE, SensorData};
 
 use aes_gcm::{
-    Aes128Gcm, Nonce,
-    aead::{Aead, KeyInit},
+    AeadInPlace, Aes128Gcm, KeyInit, Nonce,
 };
 
 use postcard;
@@ -132,39 +131,40 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     }
 }
 
+/// On-wire layout: `[u32 BE payload_len][AES-GCM ciphertext][16-byte tag]`
+/// где `payload_len` = ciphertext_len + 16 (tag inline).
+/// Шифруем in-place в `body_buf[4..]`, tag дописываем сразу после — без heap-Vec.
 pub async fn write_packet(
     socket: &mut TcpSocket<'_>,
     p: &Vec<SensorData, 40>,
-    nonce_counter: u64, // например, счётчик кадров
+    nonce_counter: u64,
 ) -> Result<usize, embassy_net::tcp::Error> {
-    let mut body_buf = [0u8; 1024];
+    const TAG_LEN: usize = 16;
+    const BUF_LEN: usize = 1024;
+    let mut body_buf = [0u8; BUF_LEN];
 
-    // сериализация
-    let payload = {
-        let payload_buf = &mut body_buf[..];
-        postcard::to_slice(p.as_slice(), payload_buf).unwrap()
-    };
+    // postcard в body_buf[4..], оставив запас под tag в конце.
+    let plain_len = postcard::to_slice(p.as_slice(), &mut body_buf[4..BUF_LEN - TAG_LEN])
+        .unwrap()
+        .len();
 
-    // AES-GCM
     let cipher = Aes128Gcm::new_from_slice(&SECRET_KEY).unwrap();
 
-    // nonce = 96 бит (12 байт). Берём счётчик и паддим.
+    // nonce = 96 бит: 4 байта паддинга + 8 байт BE-counter. ВНИМАНИЕ: reuse при
+    // рестарте MCU (counter сбрасывается) — это известная (намеренная) дыра.
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    // зашифровать (шифр + тег аутентичности в конце)
-    let ciphertext = cipher.encrypt(nonce, &*payload).unwrap();
+    // шифрование in-place, tag отдельно
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, b"", &mut body_buf[4..4 + plain_len])
+        .unwrap();
+    body_buf[4 + plain_len..4 + plain_len + TAG_LEN].copy_from_slice(&tag);
 
-    // теперь пакуем как обычно: [4 байта длины] + ciphertext
-    let payload_len = ciphertext.len();
-    let len_bytes = (payload_len as u32).to_be_bytes();
-
-    body_buf[..4].copy_from_slice(&len_bytes);
-    body_buf[4..4 + payload_len].copy_from_slice(&ciphertext);
+    let payload_len = plain_len + TAG_LEN;
+    body_buf[..4].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
     let total_len = 4 + payload_len;
-    let to_write = &body_buf[..total_len];
-
-    socket.write(to_write).await
+    socket.write(&body_buf[..total_len]).await
 }

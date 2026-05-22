@@ -20,11 +20,7 @@ portable-atomic = { version = "*" }
 serde = { version = "*", default-features = false, features = ["derive"] }
 postcard = { version = "*" }
 aes-gcm = { version = "*", default-features = false, features = [
-  #
   "aes",
-  "alloc",
-  "rand_core",
-  "heapless",
 ] }
 
 
