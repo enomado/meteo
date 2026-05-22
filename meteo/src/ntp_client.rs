@@ -1,7 +1,9 @@
 use embassy_net::dns::DnsQueryType;
-use sntpc::{NtpContext, NtpResult, NtpTimestampGenerator, get_time};
+use sntpc::{NtpContext, NtpResult, get_time};
+use sntpc_net_embassy::UdpSocketWrapper;
+use sntpc_time_embassy::EmbassyTimestampGenerator;
 
-use core::net::IpAddr;
+use core::net::{IpAddr, SocketAddr};
 
 use embassy_executor::Spawner;
 use embassy_net::{
@@ -17,54 +19,15 @@ use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_println::println;
 
 const NTP_SERVER: &str = "pool.ntp.org";
+// CURRENT_OFFSET = wall-clock-at-boot в микросекундах от UNIX epoch.
+// epoch_now = Instant::now() (с момента boot) + CURRENT_OFFSET.
+// Initial value — baked-in default до первого успешного NTP-sync.
 pub static CURRENT_OFFSET: Mutex<CriticalSectionRawMutex, i64> = Mutex::new(1757986271840363);
 
-#[derive(Copy, Clone)]
-struct Timestamp {
-    instant: Instant,
-    offset: i64,
-}
-
-impl Timestamp {
-    fn new(offset: i64) -> Self {
-        Self {
-            instant: Instant::now(),
-            offset,
-        }
-    }
-}
-
 pub fn get_current_time_epoch() -> u64 {
-    // оказалось что оффсет всётаки от epoch
     let instant = Instant::now();
-
     let ntp_offset = CURRENT_OFFSET.lock(|s| s.clone()) / 1000;
-
-    let epoch_time = instant.as_millis() + ntp_offset as u64;
-
-    epoch_time
-}
-
-impl NtpTimestampGenerator for Timestamp {
-    fn init(&mut self) {
-        self.instant = Instant::now();
-    }
-
-    fn timestamp_sec(&self) -> u64 {
-        let total_micros = self.instant.as_micros() as i64 + self.offset as i64;
-        let seconds = (total_micros / 1_000_000) as u64;
-        seconds
-    }
-
-    fn timestamp_subsec_micros(&self) -> u32 {
-        let total_micros = self.instant.as_micros() as i64 + self.offset as i64;
-        // Добавление 1_000_000 гарантирует корректное значение при отрицательном offset.
-        // let subsec = total_micros % 1_000_000; // всегда 0..999_999
-        let subsec = ((total_micros % 1_000_000) + 1_000_000) % 1_000_000;
-
-        // println!("sub {:?}", subsec);
-        subsec as u32
-    }
+    instant.as_millis() + ntp_offset as u64
 }
 
 pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
@@ -83,11 +46,7 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     );
     socket.bind(123).ok()?;
 
-    let p = CURRENT_OFFSET.lock(|s| s.clone());
-
-    // println!("current offset: {}", p);
-
-    let context = NtpContext::new(Timestamp::new(p));
+    let context = NtpContext::new(EmbassyTimestampGenerator::default());
 
     let ntp_addrs = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.ok()?;
 
@@ -96,13 +55,13 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
         return None;
     }
 
-    use sntpc::net::SocketAddr;
-
     let addr: IpAddr = ntp_addrs[0].into();
     let sock_addr = SocketAddr::from((addr, 123));
 
+    let wrapped = UdpSocketWrapper::from(socket);
+
     println!("ntp: sending to {:?}", sock_addr);
-    let result = get_time(sock_addr, &socket, context).await;
+    let result = get_time(sock_addr, &wrapped, context).await;
 
     match &result {
         Ok(s) => {
@@ -140,7 +99,7 @@ pub async fn ntp_sync_loop(stack: Stack<'static>, spawner: Spawner) {
 
         if let Some(pp) = p {
             let off = pp.offset() as i64;
-            unsafe { CURRENT_OFFSET.lock_mut(|s| *s += off) };
+            unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
 
             flag_sender.send(true);
             break;
@@ -163,7 +122,7 @@ pub async fn ntp_sync_loop(stack: Stack<'static>, spawner: Spawner) {
 
         if let Some(pp) = p.ok().and_then(|s| s) {
             let off = pp.offset() as i64;
-            unsafe { CURRENT_OFFSET.lock_mut(|s| *s += off) };
+            unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
         }
     }
 }

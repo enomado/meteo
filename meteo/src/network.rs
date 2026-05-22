@@ -45,7 +45,7 @@ pub async fn connection(mut controller: WifiController<'static>) {
 }
 
 #[embassy_executor::task]
-pub async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
+pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 

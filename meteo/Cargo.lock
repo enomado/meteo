@@ -73,9 +73,9 @@ dependencies = [
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "base64"
@@ -111,9 +111,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
+checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
 name = "block-buffer"
@@ -137,17 +137,17 @@ dependencies = [
 
 [[package]]
 name = "bt-hci"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40f2166cc54c410ddc0d0dafb3cf8dd536bcbae6bddfcc12c020c5ee4de518de"
+checksum = "211713d2e9fb4793ce4360a712c0764264aff6be48932ccf02ca2a331c0436a9"
 dependencies = [
  "btuuid",
- "defmt 1.0.1",
- "embassy-sync 0.7.2",
+ "defmt 1.1.0",
+ "embassy-sync 0.8.0",
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "futures-intrusive",
- "heapless 0.9.2",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -179,9 +179,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
-version = "1.2.59"
+version = "1.2.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7a4d3ec6524d28a329fc53654bbadc9bdd7b0431f5d65f1a56ffb28a1ee5283"
+checksum = "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -204,6 +204,17 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "defmt 1.1.0",
+ "num-traits",
+ "pure-rust-locales",
+]
 
 [[package]]
 name = "cipher"
@@ -402,14 +413,14 @@ version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "defmt"
-version = "1.0.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "548d977b6da32fa1d1fda2876453da1e7df63ad0304c8b3dae4dbe7b96f39b78"
+checksum = "a6e524506490a1953d237cb87b1cfc1e46f88c18f10a22dfe0f507dc6bfc7f7f"
 dependencies = [
  "bitflags 1.3.2",
  "defmt-macros",
@@ -417,9 +428,9 @@ dependencies = [
 
 [[package]]
 name = "defmt-macros"
-version = "1.0.1"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d4fc12a85bcf441cfe44344c4b72d58493178ce635338a3f3b78943aceb258e"
+checksum = "f0a27770e9c8f719a79d8b638281f4d828f77d8fd61e0bd94451b9b85e576a0b"
 dependencies = [
  "defmt-parser",
  "proc-macro-error2",
@@ -439,12 +450,12 @@ dependencies = [
 
 [[package]]
 name = "defmt-rtt"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93d5a25c99d89c40f5676bec8cefe0614f17f0f40e916f98e345dae941807f9e"
+checksum = "c0f73a4a4a91609e977ae3b7bd831ffa292edfd42ad140a3244a61d805b0e05e"
 dependencies = [
  "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
@@ -551,7 +562,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc2d050bdc5c21e0862a89256ed8029ae6c290a93aecefc73084b3002cdebb01"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
@@ -565,18 +576,18 @@ dependencies = [
 
 [[package]]
 name = "embassy-net"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97a788d93a10705db3350e81dc743c323e3e40371c5e52024afe7816d3ff05cf"
+checksum = "347bc855bdbdf50ed9c5a1d80e8204badb0ba149b8732dde38e1e9708ed9d313"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "embassy-net-driver",
  "embassy-sync 0.8.0",
  "embassy-time",
  "embedded-io-async 0.7.0",
  "embedded-nal-async",
- "heapless 0.9.2",
+ "heapless 0.9.3",
  "managed",
  "smoltcp",
 ]
@@ -626,11 +637,11 @@ checksum = "7bbd85cf5a5ae56bdf26f618364af642d1d0a4e245cdd75cd9aabda382f65a81"
 dependencies = [
  "cfg-if",
  "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "embedded-io-async 0.7.0",
  "futures-core",
  "futures-sink",
- "heapless 0.9.2",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -641,7 +652,7 @@ checksum = "592b0c143ec626e821d4d90da51a2bd91d559d6c442b7c74a47d368c9e23d97a"
 dependencies = [
  "cfg-if",
  "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "embassy-time-driver",
  "embedded-hal 0.2.7",
@@ -661,12 +672,12 @@ dependencies = [
 
 [[package]]
 name = "embassy-time-queue-utils"
-version = "0.3.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80e2ee86063bd028a420a5fb5898c18c87a8898026da1d4c852af2c443d0a454"
+checksum = "168297bf80aaf114b3c9ad589bf38b01b3009b9af7f97cd18086c5bbf96f5693"
 dependencies = [
  "embassy-executor-timer-queue",
- "heapless 0.8.0",
+ "heapless 0.9.3",
 ]
 
 [[package]]
@@ -728,7 +739,7 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
@@ -747,7 +758,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "embedded-io 0.7.1",
 ]
 
@@ -787,19 +798,19 @@ dependencies = [
 
 [[package]]
 name = "enumset"
-version = "1.1.10"
+version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25b07a8dfbbbfc0064c0a6bdf9edcf966de6b1c33ce344bdeca3b41615452634"
+checksum = "839c4174b41e75c8f7306110b2c51996a293b8d1d850edd529011841d9fede7d"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "enumset_derive",
 ]
 
 [[package]]
 name = "enumset_derive"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f43e744e4ea338060faee68ed933e46e722fb7f3617e722a5772d7e856d8b3ce"
+checksum = "4bd536557b58c682b217b8fb199afdff47cd3eff260623f19e77074eb073d63a"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",
@@ -815,7 +826,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "esp-alloc"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "allocator-api2",
  "cfg-if",
@@ -829,21 +840,21 @@ dependencies = [
 
 [[package]]
 name = "esp-backtrace"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "cfg-if",
  "document-features",
  "esp-config",
  "esp-metadata-generated",
  "esp-println",
- "heapless 0.9.2",
+ "heapless 0.9.3",
  "riscv",
  "xtensa-lx",
 ]
 
 [[package]]
 name = "esp-bootloader-esp-idf"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cfg-if",
  "document-features",
@@ -858,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "esp-config"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "document-features",
  "esp-metadata-generated",
@@ -869,14 +880,14 @@ dependencies = [
 
 [[package]]
 name = "esp-hal"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bitfield",
- "bitflags 2.11.0",
+ "bitflags 2.11.1",
  "bytemuck",
  "cfg-if",
  "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "delegate",
  "digest",
  "document-features",
@@ -904,6 +915,7 @@ dependencies = [
  "esp32c6",
  "esp32c61",
  "esp32h2",
+ "esp32p4",
  "esp32s2",
  "esp32s3",
  "fugit",
@@ -911,7 +923,7 @@ dependencies = [
  "nb 1.1.0",
  "paste",
  "portable-atomic",
- "rand_core 0.10.0",
+ "rand_core 0.10.1",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
  "riscv",
@@ -923,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "esp-hal-procmacros"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "document-features",
  "proc-macro-crate",
@@ -935,14 +947,14 @@ dependencies = [
 
 [[package]]
 name = "esp-metadata-generated"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "esp-phy"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "embassy-sync 0.8.0",
  "esp-config",
@@ -955,9 +967,9 @@ dependencies = [
 
 [[package]]
 name = "esp-println"
-version = "0.16.1"
+version = "0.17.0"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "esp-metadata-generated",
  "esp-sync",
@@ -967,12 +979,12 @@ dependencies = [
 
 [[package]]
 name = "esp-radio"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "allocator-api2",
  "bt-hci",
  "cfg-if",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "docsplay",
  "document-features",
  "embassy-net-driver",
@@ -989,6 +1001,7 @@ dependencies = [
  "esp-metadata-generated",
  "esp-phy",
  "esp-radio-rtos-driver",
+ "esp-rom-sys",
  "esp-sync",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32c2",
@@ -998,7 +1011,7 @@ dependencies = [
  "esp-wifi-sys-esp32s2",
  "esp-wifi-sys-esp32s3",
  "esp32c3",
- "heapless 0.9.2",
+ "heapless 0.9.3",
  "ieee802154",
  "instability",
  "num-derive",
@@ -1009,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "esp-radio-rtos-driver"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cfg-if",
  "esp-sync",
@@ -1018,9 +1031,9 @@ dependencies = [
 
 [[package]]
 name = "esp-riscv-rt"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "riscv",
  "riscv-rt",
@@ -1028,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "esp-rom-sys"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cfg-if",
  "document-features",
@@ -1038,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "esp-rtos"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "allocator-api2",
  "cfg-if",
@@ -1061,10 +1074,10 @@ dependencies = [
 
 [[package]]
 name = "esp-sync"
-version = "0.1.1"
+version = "0.2.1"
 dependencies = [
  "cfg-if",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "embassy-sync 0.6.2",
  "embassy-sync 0.7.2",
@@ -1076,147 +1089,160 @@ dependencies = [
 
 [[package]]
 name = "esp-wifi-sys-esp32"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2556f38f5292d9735d4e156e276815fc001c9a0a2be0544a575c5fb867129d24"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32c2"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4b3eb3435dae84de611d4384639e61eed862818223e93fa70c525cb6a70127f"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32c3"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b290846b53db9a3965866964260220b67f2c41cc2dbc0b377e7136239fe168a7"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32c6"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57649401fc2f906a16e2268de88693724a125adcd0eba89b594a157affcee2d5"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32h2"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cf1be2e311f4b4e75b5507c6b007ffc3fcb8c6cb57f83cc6a9569ecdcf58484"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32s2"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a9a7f1bc51e7026c3012cda4f11d8799e5e0c0bb3be85797462219def6c26e"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp-wifi-sys-esp32s3"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys?rev=fdf0095#fdf0095b1c5b7b202dae8bee8deca2ab11a9a060"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d8321f44b57d8112cbd8607cc83b85783b9195289acb45532728e3e229e7786"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
 ]
 
 [[package]]
 name = "esp32"
-version = "0.39.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.40.2"
+source = "git+https://github.com/esp-rs/esp-pacs?rev=0f4c316adbdbddb2479f50a5b931776b9655b23f#0f4c316adbdbddb2479f50a5b931776b9655b23f"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32c2"
-version = "0.28.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ef0b623533bbaa37e348c18b6b41cfd5b47c3cb64a4b9e44f0295941d62aa2e"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32c3"
-version = "0.31.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.32.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21e89ed62cf6c043a6d29c520b02a13b359ec8a75d67b65d4330ed717d15fe97"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32c5"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6f8ba56195df10224263c60ceb93b4578450019ee838b7338039a281117cb02"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32c6"
-version = "0.22.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58f34ff2633968c12125efc7f4f8f101078d5d34c7cb60eab82268db20986f9"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32c61"
-version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a926616351b1edfdb50b7ea6451a8dff0c7515c6ceb687063af7d32b117ec0d"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32h2"
-version = "0.18.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.19.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5bab026020ed4606ce113b6fde598dbc48f7eefcc46e9469ece77cc2b1aa4be"
+dependencies = [
+ "defmt 1.1.0",
+ "vcell",
+]
+
+[[package]]
+name = "esp32p4"
+version = "0.2.0"
+source = "git+https://github.com/esp-rs/esp-pacs?rev=0f4c316adbdbddb2479f50a5b931776b9655b23f#0f4c316adbdbddb2479f50a5b931776b9655b23f"
 dependencies = [
  "critical-section",
- "defmt 1.0.1",
  "vcell",
 ]
 
 [[package]]
 name = "esp32s2"
-version = "0.30.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.31.2"
+source = "git+https://github.com/esp-rs/esp-pacs?rev=0f4c316adbdbddb2479f50a5b931776b9655b23f#0f4c316adbdbddb2479f50a5b931776b9655b23f"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
 [[package]]
 name = "esp32s3"
-version = "0.34.0"
-source = "git+https://github.com/esp-rs/esp-pacs?rev=879efa6#879efa6a91c6f0e2c7672830a39cf002d8c973bb"
+version = "0.35.2"
+source = "git+https://github.com/esp-rs/esp-pacs?rev=0f4c316adbdbddb2479f50a5b931776b9655b23f#0f4c316adbdbddb2479f50a5b931776b9655b23f"
 dependencies = [
- "critical-section",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "vcell",
 ]
 
@@ -1353,9 +1379,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.1"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "heapless"
@@ -1383,11 +1409,11 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2af2455f757db2b292a9b1768c4b70186d443bcb3b316252d6b540aec1cd89ed"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "hash32 0.3.1",
  "portable-atomic",
  "stable_deref_trait",
@@ -1421,9 +1447,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.13.1"
+version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45a8a2b9cb3e0b0c1803dbb0758ffac5de2f425b23c28f518faabd9d805342ff"
+checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
@@ -1468,9 +1494,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.23"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a3546dc96b6d42c5f24902af9e2538e82e39ad350b0c766eb3fbf2d8f3d8359"
+checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
 dependencies = [
  "jiff-static",
  "log",
@@ -1481,9 +1507,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.23"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8c8b344124222efd714b73bb41f8b5120b27a7cc1c75593a6ff768d9d05aa4"
+checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1498,9 +1524,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.184"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libscd"
@@ -1513,9 +1539,9 @@ dependencies = [
 
 [[package]]
 name = "linked_list_allocator"
-version = "0.10.5"
+version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
+checksum = "2b23ac50abb8261cb38c6e2a7192d3302e0836dac1628f6a93b82b4fad185897"
 
 [[package]]
 name = "litrs"
@@ -1579,7 +1605,7 @@ dependencies = [
  "aes-gcm",
  "bmp390-rs",
  "cfg-if",
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "defmt-rtt",
  "embassy-embedded-hal",
  "embassy-executor",
@@ -1598,13 +1624,15 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "esp-sync",
- "heapless 0.9.2",
+ "heapless 0.9.3",
  "libscd",
  "portable-atomic",
  "postcard",
  "serde",
  "smoltcp",
  "sntpc",
+ "sntpc-net-embassy",
+ "sntpc-time-embassy",
  "static_cell",
  "toml",
 ]
@@ -1697,9 +1725,9 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
 name = "portable-atomic-util"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "091397be61a01d4be58e7841595bd4bfedb15f1cd54977d79b8271e94ed799a3"
+checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
 dependencies = [
  "portable-atomic",
 ]
@@ -1777,6 +1805,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pure-rust-locales"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "869675ad2d7541aea90c6d88c81f46a7f4ea9af8cd0395d38f11a95126998a0d"
+dependencies = [
+ "defmt 1.1.0",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1799,9 +1836,9 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 
 [[package]]
 name = "rand_core"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "regex-automata"
@@ -1856,7 +1893,7 @@ version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d07b9f3a0eff773fc4df11f44ada4fa302e529bff4b7fe7e6a4b98a65ce9174"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "riscv",
  "riscv-pac",
  "riscv-rt-macros",
@@ -2007,28 +2044,50 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smoltcp"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac729b0a77bd092a3f06ddaddc59fe0d67f48ba0de45a9abe707c2842c7f8767"
+checksum = "5f73d40463bba65efc9adc6370b56df76d563cc46e2482bba58351b4afb7535e"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "cfg-if",
  "defmt 0.3.100",
- "heapless 0.9.2",
+ "heapless 0.9.3",
  "managed",
 ]
 
 [[package]]
 name = "sntpc"
-version = "0.7.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b4225ed8af9afa45007222d268dac20437c9783be704fcbdc3399bffe7e81dc"
+checksum = "29793617f843f4e7df42c83b896939e5ca3b773a5b5d25ea68eaa247b7edbf9d"
 dependencies = [
  "cfg-if",
- "defmt 1.0.1",
- "embassy-net",
+ "chrono",
+ "defmt 1.1.0",
  "log",
+]
+
+[[package]]
+name = "sntpc-net-embassy"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c450c686c9762eff9878ac3dbd14094b9f76ea63cd383a21afbe8787c5bff9d4"
+dependencies = [
+ "cfg-if",
+ "defmt 1.1.0",
+ "embassy-net",
+ "sntpc",
+]
+
+[[package]]
+name = "sntpc-time-embassy"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12826825945190de063eca0c06d89247d1feece2772e1b315a33a6e4ee68fd0a"
+dependencies = [
+ "embassy-time",
+ "sntpc",
 ]
 
 [[package]]
@@ -2290,9 +2349,9 @@ dependencies = [
 
 [[package]]
 name = "typenum"
-version = "1.19.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
+checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "ufmt-write"
@@ -2387,9 +2446,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.1"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09dac053f1cd375980747450bfc7250c264eaae0583872e845c0c7cd578872b5"
+checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
 ]
@@ -2403,9 +2462,9 @@ dependencies = [
 
 [[package]]
 name = "xtensa-lx-rt"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
- "defmt 1.0.1",
+ "defmt 1.1.0",
  "document-features",
  "xtensa-lx",
  "xtensa-lx-rt-proc-macros",

@@ -76,22 +76,13 @@ async fn main(spawner: Spawner) -> ! {
             .with_password(WIFI_PASSWD.into()),
     );
 
-    let (controller, interfaces) = esp_radio::wifi::new(
+    let controller = esp_radio::wifi::new(
         peripherals.WIFI,
         ControllerConfig::default().with_initial_config(station_config),
     )
     .unwrap();
 
-    // WifiMode::default()
-
-    // let (controller, interfaces) = esp_radio::wifi::new(
-    //     esp_radio_ctrl,
-    //     peripherals.WIFI,
-    //     // esp_radio::wifi::Config::default(),
-    // )
-    // .unwrap();
-
-    let wifi_interface = interfaces.station;
+    let wifi_interface = esp_radio::wifi::Interface::station();
 
     // {
     //         let timg1 = TimerGroup::new(peripherals.TIMG1);
