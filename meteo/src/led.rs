@@ -166,16 +166,32 @@ impl<'a> RgbLed<'a> {
     }
 }
 
-/// Цвет blink-кода ошибки (в процентах яркости)
+/// Цвет blink-кода ошибки (в процентах яркости).
+/// SYS_NO_TCP не имеет фиксированного цвета — мигает текущим CO2-цветом
+/// (см. blink_color), чтобы "нет сервера" не перекрывал индикацию воздуха.
 fn error_color(bit: u8) -> (u8, u8, u8) {
     const B: u8 = 40;
     match bit {
         SYS_BUF_OVERFLOW => (B, B / 2, 0), // оранжевый — warning
-        SYS_NO_TCP => (0, 0, B),           // синий — нет сервера
         SYS_NO_PERIPH => (B, 0, B),        // фиолетовый — нет периферии
         SYS_NO_WIFI => (B, B, 0),          // жёлтый — нет wifi/ntp
         _ => (B, 0, 0),
     }
+}
+
+/// Цвет конкретного blink-overlay'я. Для NO_TCP берём текущий CO2-цвет,
+/// иначе фиксированный error_color.
+fn blink_color(bit: u8) -> (u8, u8, u8) {
+    if bit == SYS_NO_TCP {
+        let co2 = LATEST_CO2.load(Ordering::Relaxed);
+        if co2 != u16::MAX {
+            return co2_to_rgb(co2);
+        }
+        // CO2 ещё неизвестен — fallback на старый синий
+        const B: u8 = 40;
+        return (0, 0, B);
+    }
+    error_color(bit)
 }
 
 /// Параметры breathing-пульса для повышенного CO2.
@@ -216,9 +232,10 @@ fn scale_rgb(rgb: (u8, u8, u8), pct_of_full: u8) -> (u8, u8, u8) {
     (s(rgb.0), s(rgb.1), s(rgb.2))
 }
 
-/// Интервал между blink-overlay'ями ошибок поверх CO2-сигнала.
-/// Ошибки показываются регулярно, но не заглушают цвет/дыхание.
-const OVERLAY_INTERVAL_MS: u32 = 10_000;
+/// Как часто проигрывать статус-оверлей (потеря связи и пр. ошибки) поверх
+/// CO2-сигнала. Настраиваемая «крутилка»: правится здесь, одним числом.
+/// Сейчас 60с — ошибки сигналятся раз в минуту, не заглушая цвет/дыхание.
+const OVERLAY_INTERVAL_MS: u32 = 60_000;
 
 /// Сыграть blink-коды для активных бит из `only_bits` (приоритет по bit_idx).
 async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
@@ -229,7 +246,7 @@ async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
             continue;
         }
         let blinks = bit_idx + 1;
-        let (r, g, b) = error_color(bit);
+        let (r, g, b) = blink_color(bit);
         for _ in 0..blinks {
             led.set(r, g, b);
             Timer::after(Duration::from_millis(180)).await;
