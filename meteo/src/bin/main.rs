@@ -49,7 +49,7 @@ async fn main(spawner: Spawner) -> ! {
             .with_password(WIFI_PASSWD.into()),
     );
 
-    let controller = esp_radio::wifi::new(
+    let controller = esp_radio::wifi::WifiController::new(
         peripherals.WIFI,
         ControllerConfig::default().with_initial_config(station_config),
     )

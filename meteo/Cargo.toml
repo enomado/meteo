@@ -15,7 +15,9 @@ static_cell = { version = "*", features = [] }
 bmp390-rs = { version = "*" }
 libscd = { version = "*", default-features = false, features = ["async", "scd4x", "scd41"] }
 
-heapless = { version = "*", features = ["portable-atomic"] }
+# Пин 0.8: фича portable-atomic нужна на riscv32imc (нет native CAS); esp-radio
+# тянет heapless 0.9 отдельной копией — наши heapless-типы наружу не уходят.
+heapless = { version = "0.8", features = ["portable-atomic"] }
 portable-atomic = { version = "*" }
 serde = { version = "*", default-features = false, features = ["derive"] }
 postcard = { version = "*" }
@@ -164,7 +166,8 @@ smoltcp = { version = "*", default-features = false, features = [
 toml = "*"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
-# - synced to upstream/main `2294099a` (2026-05-22)
+# - synced to upstream/main `df161e61` (2026-06-16, esp-radio 0.18.0 → 1.0.0-beta.0)
+#   on esp-hal branch `tmp/upstream-main-20260616`; prev sync `2294099a` (2026-05-22)
 # - kept as path patch for fast local hacks; PHY fix from prev fork is now in upstream
 [patch."https://github.com/esp-rs/esp-hal"]
 esp-hal = { path = "/home/sc/t/embed/esp-hal/esp-hal" }
