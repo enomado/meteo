@@ -1,0 +1,17 @@
+[package]
+name = "example_server"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Minimal reference receiver for the meteo firmware wire protocol.
+# It listens on TCP, decrypts each packet (AES-128-GCM), decodes it (postcard)
+# and prints the readings. Plug your own backend where marked in `main.rs`.
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+aes-gcm = "0.10"
+postcard = { version = "1", features = ["use-std"] }
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+chrono = "0.4"
