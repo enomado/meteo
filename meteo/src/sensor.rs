@@ -247,9 +247,13 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         Err(e) => println!("SCD41: ASC read error: {:?}", e),
     }
 
-    // --- wait NTP ---
+    // NTP-синк больше НЕ блокирует измерения: CO2/LED должны работать и без сети
+    // (комната без WiFi). Раньше sensor_loop висел на этом await навсегда, поэтому
+    // publish_co2 не вызывался, has_co2 в led_loop оставался false, и индикатор
+    // сваливался в безостановочный blink-цикл вместо штатного оверлея раз/мин.
+    // Флаг синка теперь читаем неблокирующе (try_get) — только чтобы не класть в
+    // серверный буфер показания с дефолтным (неверным) таймстампом до первого NTP.
     let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
-    ntp_ready_receiver.changed_and(|s| *s == true).await;
 
     // --- main loop ~30 сек ---
     let mut last_pressure_hpa: Option<u16> = None;
@@ -308,18 +312,23 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
             }
         }
 
-        // 6) объединяем с одним timestamp
+        // 6) публикуем CO2 для LED-таска — ВСЕГДА, даже без сети и без NTP-времени.
         let co2_for_led = scd_reading.as_ref().map(|s| s.co2);
-        let mdata = SensorData {
-            baro,
-            scd: scd_reading,
-            time: get_current_time_epoch(),
-        };
-        enqueue_sensor_data(mdata).await;
-
-        // 7) публикуем CO2 для LED-таска
         if let Some(c) = co2_for_led {
             publish_co2(c);
+        }
+
+        // 7) в серверный буфер кладём только с доверенным временем (после первого
+        // NTP-синка). try_get неблокирующий; once-synced остаётся Some(true) и при
+        // последующих кратких обрывах WiFi — буферизация продолжается. Холодный
+        // старт без WiFi → не засоряем очередь baked-in таймстампами.
+        if ntp_ready_receiver.try_get() == Some(true) {
+            let mdata = SensorData {
+                baro,
+                scd: scd_reading,
+                time: get_current_time_epoch(),
+            };
+            enqueue_sensor_data(mdata).await;
         }
 
         // 8) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
