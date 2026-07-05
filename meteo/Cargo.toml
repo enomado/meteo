@@ -102,6 +102,10 @@ esp-backtrace = { git = "https://github.com/esp-rs/esp-hal", package = "esp-back
   "println",
   # "exception-handler",
   "panic-handler",
+  # вместо вечного loop{} после паники зовём custom_halt() → software_reset
+  # (self-heal). Бэктрейс печатается ДО этого, defmt-лог паники сохраняется.
+  # См. crate::watchdog::custom_halt и инцидент 2026-07-04 (заморозка на 22ч).
+  "custom-halt",
   # "semihosting",
   "esp32c3",
 ] }

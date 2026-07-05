@@ -6,3 +6,4 @@ pub mod ntp_client;
 pub mod sensor;
 pub mod spi_helper;
 pub mod utils;
+pub mod watchdog;

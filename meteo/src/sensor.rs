@@ -258,6 +258,10 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
     // --- main loop ~30 сек ---
     let mut last_pressure_hpa: Option<u16> = None;
     loop {
+        // heartbeat для watchdog: доказывает что таска крутит свой цикл, а не
+        // зависла на I2C/SPI-await. Раз в ~30с.
+        crate::watchdog::beat_sensor();
+
         // 1) читаем BMP390 если готов
         let mut baro: Option<BaroReading> = None;
         if let Some(ref mut barometer) = barometer {

@@ -16,6 +16,11 @@ pub const SYS_BUF_OVERFLOW: u8 = 1 << 0; // 1× — буфер переполн�
 pub const SYS_NO_TCP: u8 = 1 << 1; // 2× — нет TCP/сервера
 pub const SYS_NO_PERIPH: u8 = 1 << 2; // 3× — нет периферии (BMP390/SCD41)
 pub const SYS_NO_WIFI: u8 = 1 << 3; // 4× — нет WiFi/NTP
+// Латч-биты (не текущий статус, а «этот boot после аварийного reset»): ставятся
+// один раз на буте из RTC-маркера и НЕ гаснут до передёрга питания — чтобы факт
+// падения был виден визуально, даже без serial. См. crate::watchdog.
+pub const SYS_PANIC_RECOVERED: u8 = 1 << 4; // 5× белым — был reset из-за паники
+pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset из-за зависания (watchdog)
 
 pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 
@@ -172,9 +177,11 @@ impl<'a> RgbLed<'a> {
 fn error_color(bit: u8) -> (u8, u8, u8) {
     const B: u8 = 40;
     match bit {
-        SYS_BUF_OVERFLOW => (B, B / 2, 0), // оранжевый — warning
-        SYS_NO_PERIPH => (B, 0, B),        // фиолетовый — нет периферии
-        SYS_NO_WIFI => (B, B, 0),          // жёлтый — нет wifi/ntp
+        SYS_BUF_OVERFLOW => (B, B / 2, 0),   // оранжевый — warning
+        SYS_NO_PERIPH => (B, 0, B),          // фиолетовый — нет периферии
+        SYS_NO_WIFI => (B, B, 0),            // жёлтый — нет wifi/ntp
+        SYS_PANIC_RECOVERED => (B, B, B),    // белый — восстановился после паники
+        SYS_WDT_RECOVERED => (0, B, B),      // голубой — восстановился после зависания
         _ => (B, 0, 0),
     }
 }
@@ -239,7 +246,8 @@ const OVERLAY_INTERVAL_MS: u32 = 60_000;
 
 /// Сыграть blink-коды для активных бит из `only_bits` (приоритет по bit_idx).
 async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
-    for bit_idx in 0u8..4 {
+    // 0..6: биты 0-3 — текущий статус, 4-5 — латч аварийного reset (см. led-биты).
+    for bit_idx in 0u8..6 {
         let bit = 1u8 << bit_idx;
         // перечитываем актуальный статус — бит мог погаснуть пока играли предыдущий
         if SYSTEM_STATUS.load(Ordering::Relaxed) & only_bits & bit == 0 {
