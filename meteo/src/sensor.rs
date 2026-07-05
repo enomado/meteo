@@ -68,14 +68,23 @@ async fn calibrate_temp_offset(
         return;
     };
 
-    // BMP390 температура — ждём до 10 попыток по 2 сек.
+    // BMP390 температура — ждём до 10 попыток по 2 сек. Ошибку шины НЕ паникуем
+    // (было: .unwrap()): прерываем — ниже отработает fallback «skip temp offset».
     let mut bmp_temp = None;
     if let Some(barometer) = barometer {
         for _ in 0..10 {
-            let status = barometer.read::<IntStatus>().await.unwrap();
+            let status = match barometer.read::<IntStatus>().await {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("SCD41 cal: BMP390 status read error: {:?}", e);
+                    break;
+                }
+            };
             if status.drdy {
-                let data = barometer.read_sensor_data().await.unwrap();
-                bmp_temp = Some(data.temperature());
+                match barometer.read_sensor_data().await {
+                    Ok(data) => bmp_temp = Some(data.temperature()),
+                    Err(e) => println!("SCD41 cal: BMP390 read_sensor_data error: {:?}", e),
+                }
                 break;
             }
             Timer::after(Duration::from_secs(2)).await;
@@ -262,17 +271,30 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         // зависла на I2C/SPI-await. Раз в ~30с.
         crate::watchdog::beat_sensor();
 
-        // 1) читаем BMP390 если готов
+        // 1) читаем BMP390 если готов. Ошибку шины НЕ паникуем (было: .unwrap()
+        // → reset всего чипа на транзиенте SPI): пропускаем давление в этом
+        // цикле, ставим SYS_NO_PERIPH — как для SCD41 ниже.
         let mut baro: Option<BaroReading> = None;
         if let Some(ref mut barometer) = barometer {
-            let status = barometer.read::<IntStatus>().await.unwrap();
-            if status.drdy {
-                let data = barometer.read_sensor_data().await.unwrap();
-                let pressure = data.pressure();
-                let temp = data.temperature();
-                last_pressure_hpa = Some((pressure / 100.0) as u16);
-                println!("BMP390: P={:.1} T={:.2}", pressure, temp);
-                baro = Some(BaroReading { pressure, temp });
+            match barometer.read::<IntStatus>().await {
+                Ok(status) if status.drdy => match barometer.read_sensor_data().await {
+                    Ok(data) => {
+                        let pressure = data.pressure();
+                        let temp = data.temperature();
+                        last_pressure_hpa = Some((pressure / 100.0) as u16);
+                        println!("BMP390: P={:.1} T={:.2}", pressure, temp);
+                        baro = Some(BaroReading { pressure, temp });
+                    }
+                    Err(e) => {
+                        println!("BMP390: read_sensor_data error: {:?}", e);
+                        set_status(SYS_NO_PERIPH);
+                    }
+                },
+                Ok(_) => {} // не drdy — штатно, ждём следующий цикл
+                Err(e) => {
+                    println!("BMP390: status read error: {:?}", e);
+                    set_status(SYS_NO_PERIPH);
+                }
             }
         }
 
