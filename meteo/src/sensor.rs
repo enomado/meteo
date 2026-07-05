@@ -68,24 +68,25 @@ async fn calibrate_temp_offset(
         return;
     };
 
-    // BMP390 температура — ждём до 10 попыток по 2 сек. Ошибку шины НЕ паникуем
-    // (было: .unwrap()): прерываем — ниже отработает fallback «skip temp offset».
+    // BMP390 температура — до 10 попыток по 2 сек. Ошибку шины НЕ паникуем и НЕ
+    // сдаёмся сразу: транзиент шины может пройти → ретраим в пределах того же
+    // бюджета попыток (как и ожидание drdy). Жёсткий предел остаётся: калибровка
+    // на старте, блокировать её навсегда нельзя — иначе не пойдут CO2-данные.
     let mut bmp_temp = None;
     if let Some(barometer) = barometer {
         for _ in 0..10 {
-            let status = match barometer.read::<IntStatus>().await {
-                Ok(s) => s,
-                Err(e) => {
-                    println!("SCD41 cal: BMP390 status read error: {:?}", e);
-                    break;
-                }
-            };
-            if status.drdy {
-                match barometer.read_sensor_data().await {
-                    Ok(data) => bmp_temp = Some(data.temperature()),
-                    Err(e) => println!("SCD41 cal: BMP390 read_sensor_data error: {:?}", e),
-                }
-                break;
+            match barometer.read::<IntStatus>().await {
+                Ok(status) if status.drdy => match barometer.read_sensor_data().await {
+                    Ok(data) => {
+                        bmp_temp = Some(data.temperature());
+                        break;
+                    }
+                    Err(e) => {
+                        println!("SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}", e)
+                    }
+                },
+                Ok(_) => {} // не drdy ещё — ждём и ретраим
+                Err(e) => println!("SCD41 cal: BMP390 status read error, retrying: {:?}", e),
             }
             Timer::after(Duration::from_secs(2)).await;
         }
