@@ -7,7 +7,8 @@ use heapless::Vec;
 use crate::led::{SYS_NO_TCP, SYS_NO_WIFI, clear_status, set_status};
 use crate::sensor::{SENSOR_QUE, SensorData};
 
-use aes_gcm::{AeadInPlace, Aes128Gcm, KeyInit, Nonce};
+use aes_gcm::aead::AeadInOut;
+use aes_gcm::{Aes128Gcm, KeyInit, Nonce};
 
 use postcard;
 
@@ -193,11 +194,11 @@ pub async fn write_packet(
     // рестарте MCU (counter сбрасывается) — это известная (намеренная) дыра.
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
 
-    // шифрование in-place, tag отдельно
+    // шифрование in-place (InOutBuf поверх среза), tag отдельно
     let tag = cipher
-        .encrypt_in_place_detached(nonce, b"", &mut body_buf[4..4 + plain_len])
+        .encrypt_inout_detached(&nonce, b"", (&mut body_buf[4..4 + plain_len]).into())
         .unwrap();
     body_buf[4 + plain_len..4 + plain_len + TAG_LEN].copy_from_slice(&tag);
 
