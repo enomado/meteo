@@ -177,11 +177,11 @@ impl<'a> RgbLed<'a> {
 fn error_color(bit: u8) -> (u8, u8, u8) {
     const B: u8 = 40;
     match bit {
-        SYS_BUF_OVERFLOW => (B, B / 2, 0),   // оранжевый — warning
-        SYS_NO_PERIPH => (B, 0, B),          // фиолетовый — нет периферии
-        SYS_NO_WIFI => (B, B, 0),            // жёлтый — нет wifi/ntp
-        SYS_PANIC_RECOVERED => (B, B, B),    // белый — восстановился после паники
-        SYS_WDT_RECOVERED => (0, B, B),      // голубой — восстановился после зависания
+        SYS_BUF_OVERFLOW => (B, B / 2, 0), // оранжевый — warning
+        SYS_NO_PERIPH => (B, 0, B),        // фиолетовый — нет периферии
+        SYS_NO_WIFI => (B, B, 0),          // жёлтый — нет wifi/ntp
+        SYS_PANIC_RECOVERED => (B, B, B),  // белый — восстановился после паники
+        SYS_WDT_RECOVERED => (0, B, B),    // голубой — восстановился после зависания
         _ => (B, 0, 0),
     }
 }

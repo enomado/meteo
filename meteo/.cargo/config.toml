@@ -36,6 +36,15 @@ rustflags = [
   # until nightly
   # "-Z",
   #"stack-protector=all",
+
+  # Vendored esp-hal is a [patch] path dep, so cargo compiles it as first-party
+  # (git/registry deps get `--cap-lints allow`, path patches do not). The new
+  # deny-by-default nightly lint `invalid_runtime_symbol_definitions` then fires
+  # on esp-alloc's `extern "C" { fn memcpy(..) }` declaration (canonical sig is
+  # `*mut c_void, *const c_void, usize -> *mut c_void`; same ABI). Suppress here
+  # to keep the vendored fork == upstream/main (no local edits). See Cargo.toml.
+  "-A",
+  "invalid_runtime_symbol_definitions",
 ]
 
 

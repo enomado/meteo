@@ -95,7 +95,7 @@ async fn try_sync(stack: Stack<'_>) -> bool {
 
     let Some(pp) = res else { return false };
 
-    let off = pp.offset() as i64;
+    let off = pp.offset();
     unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
     true
 }

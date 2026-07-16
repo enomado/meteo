@@ -43,11 +43,17 @@ async fn main(spawner: Spawner) -> ! {
     let (boot_fault, fault_count) = meteo::watchdog::take_boot_fault();
     match boot_fault {
         meteo::watchdog::FAULT_PANIC => {
-            println!("BOOT: recovered from PANIC (faults this power-session: {})", fault_count);
+            println!(
+                "BOOT: recovered from PANIC (faults this power-session: {})",
+                fault_count
+            );
             meteo::led::set_status(meteo::led::SYS_PANIC_RECOVERED);
         }
         meteo::watchdog::FAULT_WDT_STALL => {
-            println!("BOOT: recovered from WATCHDOG STALL (faults this power-session: {})", fault_count);
+            println!(
+                "BOOT: recovered from WATCHDOG STALL (faults this power-session: {})",
+                fault_count
+            );
             meteo::led::set_status(meteo::led::SYS_WDT_RECOVERED);
         }
         _ => println!("BOOT: clean start"),

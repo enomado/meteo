@@ -139,7 +139,10 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                     // Батч не влезает в буфер. При MAX_BATCH недостижимо, но НЕ
                     // паникуем (было: .unwrap() → заморозка чипа). Дропаем батч,
                     // чтобы не застрять в вечном ретрае одного пакета.
-                    println!("serialize error: batch too big, dropping {} readings", p.len());
+                    println!(
+                        "serialize error: batch too big, dropping {} readings",
+                        p.len()
+                    );
                     measurements_buf.clear();
                 }
                 Err(SendError::Tcp(e)) => {
@@ -206,5 +209,8 @@ pub async fn write_packet(
     body_buf[..4].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
     let total_len = 4 + payload_len;
-    socket.write(&body_buf[..total_len]).await.map_err(SendError::Tcp)
+    socket
+        .write(&body_buf[..total_len])
+        .await
+        .map_err(SendError::Tcp)
 }

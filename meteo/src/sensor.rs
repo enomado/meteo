@@ -82,7 +82,10 @@ async fn calibrate_temp_offset(
                         break;
                     }
                     Err(e) => {
-                        println!("SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}", e)
+                        println!(
+                            "SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}",
+                            e
+                        )
                     }
                 },
                 Ok(_) => {} // не drdy ещё — ждём и ретраим
