@@ -74,7 +74,10 @@ struct SensorData {
 }
 
 /// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded packet.
-async fn read_packet(socket: &mut TcpStream, nonce_counter: u64) -> anyhow::Result<Vec<SensorData>> {
+async fn read_packet(
+    socket: &mut TcpStream,
+    nonce_counter: u64,
+) -> anyhow::Result<Vec<SensorData>> {
     // 1) length prefix
     let mut len_buf = [0u8; 4];
     socket.read_exact(&mut len_buf).await?;
@@ -98,7 +101,8 @@ async fn read_packet(socket: &mut TcpStream, nonce_counter: u64) -> anyhow::Resu
         .context("AES-GCM decrypt failed (wrong key or out-of-sync nonce?)")?;
 
     // 4) decode
-    let data: Vec<SensorData> = postcard::from_bytes(&plaintext).context("postcard decode failed")?;
+    let data: Vec<SensorData> =
+        postcard::from_bytes(&plaintext).context("postcard decode failed")?;
     Ok(data)
 }
 
@@ -111,10 +115,17 @@ fn print_readings(addr: &std::net::SocketAddr, packet: &[SensorData]) {
             .map(|dt| dt.with_timezone(&Local).to_string())
             .unwrap_or_else(|| format!("{}ms", s.time));
         if let Some(b) = &s.baro {
-            println!("[{addr}] {when}  P={:.1} hPa  T={:.2} °C", b.pressure / 100.0, b.temp);
+            println!(
+                "[{addr}] {when}  P={:.1} hPa  T={:.2} °C",
+                b.pressure / 100.0,
+                b.temp
+            );
         }
         if let Some(sc) = &s.scd {
-            println!("[{addr}] {when}  CO2={} ppm  H={:.1}%  T={:.2} °C", sc.co2, sc.humidity, sc.temp);
+            println!(
+                "[{addr}] {when}  CO2={} ppm  H={:.1}%  T={:.2} °C",
+                sc.co2, sc.humidity, sc.temp
+            );
         }
     }
 }
@@ -133,7 +144,10 @@ async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
             }
         };
 
-        println!("[{addr}] packet #{nonce_counter}: {} reading(s)", packet.len());
+        println!(
+            "[{addr}] packet #{nonce_counter}: {} reading(s)",
+            packet.len()
+        );
         print_readings(&addr, &packet);
 
         // >>> Plug your backend here: write `packet` to a DB, a queue, a file,
