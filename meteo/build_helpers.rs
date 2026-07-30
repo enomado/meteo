@@ -27,8 +27,9 @@ pub fn ip_literal(ip: IpAddr) -> String {
 }
 
 pub struct FirmwareConfig {
-    pub wifi_ssid: String,
-    pub wifi_passwd: String,
+    /// Сети в порядке из конфига: [0] — основная, [1] — опциональная wifi2.
+    /// Прошивка выбирает из них по силе сигнала (скан), см. `network::connection`.
+    pub wifi_networks: Vec<(String, String)>,
     pub server_ip: Ipv4Addr,
     pub server_port: u16,
     pub secret_key: [u8; 16],
@@ -45,6 +46,21 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
         .as_str()
         .expect("no wifi_passwd")
         .to_string();
+
+    let mut wifi_networks = vec![(wifi_ssid, wifi_passwd)];
+
+    // wifi2 — опциональная вторая сеть. Обе половины (ssid+passwd) либо есть,
+    // либо нет: полконфига — это молчаливо неработающая сеть, поэтому паникуем.
+    match (fw.get("wifi2_ssid"), fw.get("wifi2_passwd")) {
+        (Some(ssid), Some(passwd)) => {
+            let ssid = ssid.as_str().expect("wifi2_ssid must be a string");
+            let passwd = passwd.as_str().expect("wifi2_passwd must be a string");
+            wifi_networks.push((ssid.to_string(), passwd.to_string()));
+        }
+        (None, None) => {}
+        _ => panic!("wifi2_ssid and wifi2_passwd must be set together"),
+    }
+
     let server_ip_str = fw["server_ip"].as_str().expect("no server_ip");
     // let server_ip: IpAddr = server_ip_str.parse().expect("invalid IP");
     let server_ip: Ipv4Addr = server_ip_str.parse().expect("no server_ip");
@@ -55,8 +71,7 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     let secret_key = hex_to_u8_16(secret_key_hex);
 
     FirmwareConfig {
-        wifi_ssid,
-        wifi_passwd,
+        wifi_networks,
         server_ip,
         secret_key,
         server_port,

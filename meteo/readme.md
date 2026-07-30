@@ -18,10 +18,18 @@ Copy `config.toml.template` to `config.toml` and fill in:
 [firmware]
 wifi_ssid = "..."
 wifi_passwd = "..."
+# optional second network (both keys or neither)
+wifi2_ssid = "..."
+wifi2_passwd = "..."
 secret_key = "..."  # 16-byte hex (128-bit AES-GCM key)
 server_ip = "..."
 server_port = 1234
 ```
+
+With `wifi2_*` set, the firmware scans before every (re)connect and joins whichever
+of the two SSIDs has the stronger RSSI. If the scan fails or neither SSID is on air,
+it alternates between the configured networks on successive attempts. With a single
+network configured, no scan is performed.
 
 ## Build & Flash
 

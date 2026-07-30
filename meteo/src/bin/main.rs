@@ -72,10 +72,13 @@ async fn main(spawner: Spawner) -> ! {
 
     let rng = Rng::new();
 
+    // Стартовая конфигурация — основная сеть. Если сетей в конфиге несколько,
+    // `connection` перед каждым коннектом сам переставит её на самую сильную по RSSI.
+    let (ssid, passwd) = WIFI_NETWORKS[0];
     let station_config = Config::Station(
         StationConfig::default()
-            .with_ssid(WIFI_SSID)
-            .with_password(WIFI_PASSWD.into()),
+            .with_ssid(ssid)
+            .with_password(passwd.into()),
     );
 
     let mut controller = esp_radio::wifi::WifiController::new(

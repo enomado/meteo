@@ -1,6 +1,6 @@
 use embassy_net::{Runner, Stack, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
-use esp_radio::wifi::{Interface, WifiController};
+use esp_radio::wifi::{Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig};
 
 use heapless::Vec;
 
@@ -18,11 +18,80 @@ use esp_println::println;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
+/// Сколько AP забираем из скана. Скан отдаёт список, отсортированный по RSSI;
+/// 20 с запасом покрывает и людное окружение — нам нужны лишь свои SSID.
+const SCAN_MAX_APS: usize = 20;
+
+/// Выбирает сеть из `WIFI_NETWORKS` с самым сильным сигналом.
+///
+/// Одна сеть в конфиге — выбирать не из чего, скан пропускаем (это ~2с радио на
+/// каждый реконнект). Если скан упал или ни одного своего SSID в эфире нет —
+/// ПЕРЕБИРАЕМ сети по кругу (`attempt`), а не липнем к первой: при сломанном
+/// скане иначе вторая сеть не была бы испробована никогда.
+async fn pick_network(
+    controller: &mut WifiController<'static>,
+    attempt: usize,
+) -> (&'static str, &'static str) {
+    let fallback = WIFI_NETWORKS[attempt % WIFI_NETWORKS.len()];
+
+    if WIFI_NETWORKS.len() < 2 {
+        return fallback;
+    }
+
+    let scan_config = ScanConfig::default().with_max(SCAN_MAX_APS);
+    let aps = match controller.scan_async(&scan_config).await {
+        Ok(aps) => aps,
+        Err(e) => {
+            println!("scan failed: {:?}, trying {}", e, fallback.0);
+            return fallback;
+        }
+    };
+
+    let mut best: Option<((&'static str, &'static str), i8)> = None;
+    for ap in aps.iter() {
+        let Some(net) = WIFI_NETWORKS
+            .iter()
+            .find(|(ssid, _)| *ssid == ap.ssid.as_str())
+        else {
+            continue;
+        };
+        if best.is_none_or(|(_, rssi)| ap.signal_strength > rssi) {
+            best = Some((*net, ap.signal_strength));
+        }
+    }
+
+    match best {
+        Some((net, rssi)) => {
+            println!("scan: picked {} (rssi {})", net.0, rssi);
+            net
+        }
+        None => {
+            println!("scan: no configured SSID on air, trying {}", fallback.0);
+            fallback
+        }
+    }
+}
+
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
+    let mut attempt = 0usize;
     loop {
         println!("About to connect...");
+
+        let (ssid, passwd) = pick_network(&mut controller, attempt).await;
+        attempt = attempt.wrapping_add(1);
+
+        let station_config = Config::Station(
+            StationConfig::default()
+                .with_ssid(ssid)
+                .with_password(passwd.into()),
+        );
+        if let Err(e) = controller.set_config(&station_config) {
+            // Смена конфига не удалась — не фатально: коннектимся с тем, что уже
+            // стоит в контроллере (в худшем случае это основная сеть).
+            println!("set_config({}) failed: {:?}", ssid, e);
+        }
 
         match controller.connect_async().await {
             Ok(info) => {

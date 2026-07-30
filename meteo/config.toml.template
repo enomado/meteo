@@ -1,6 +1,10 @@
 [firmware]
 wifi_ssid = "network"
 wifi_passwd = "brrrbrrr"
+# Опциональная вторая сеть (обе строки либо есть, либо нет). Если задана —
+# прошивка перед каждым коннектом сканирует эфир и берёт сеть с сильным сигналом.
+# wifi2_ssid = "network2"
+# wifi2_passwd = "brrrbrrr2"
 secret_key = "737b706a727325657266746b65792131" # hex string 16 байт = 128 бит
 server_ip = "1.1.1.1"
 server_port = 1234

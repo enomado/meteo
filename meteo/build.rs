@@ -28,16 +28,23 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest_path = out_dir.join("constants.rs");
 
+    // Слайс (ssid, passwd) в порядке из конфига: [0] — основная сеть, [1] — wifi2.
+    // Прошивка сама выбирает между ними по RSSI, порядок здесь — только fallback.
+    let networks_literal = fw
+        .wifi_networks
+        .iter()
+        .map(|(ssid, passwd)| format!("(\"{ssid}\", \"{passwd}\")"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     let contents = format!(
         r#"
-pub const WIFI_SSID: &str = "{ssid}";
-pub const WIFI_PASSWD: &str = "{passwd}";
+pub static WIFI_NETWORKS: &[(&str, &str)] = &[{networks}];
 pub const SERVER_IP: core::net::Ipv4Addr = {ip};
 pub const SERVER_PORT: u16 = {server_port};
 pub static SECRET_KEY: [u8; 16] = [{secret}];
 "#,
-        ssid = fw.wifi_ssid,
-        passwd = fw.wifi_passwd,
+        networks = networks_literal,
         ip = server_ip_literal,
         server_port = fw.server_port,
         secret = secret_bytes_literal
@@ -46,8 +53,14 @@ pub static SECRET_KEY: [u8; 16] = [{secret}];
     fs::write(&dest_path, contents).unwrap();
 
     println!("cargo:warning==== Firmware build parameters ===");
-    println!("cargo:warning=WiFi SSID     : {}", fw.wifi_ssid);
-    println!("cargo:warning=WiFi Password : {}", fw.wifi_passwd);
+    for (i, (ssid, passwd)) in fw.wifi_networks.iter().enumerate() {
+        println!(
+            "cargo:warning=WiFi #{}        : {} / {}",
+            i + 1,
+            ssid,
+            passwd
+        );
+    }
     println!("cargo:warning=Server IP     : {}", fw.server_ip);
     println!("cargo:warning=Server PORT   : {}", fw.server_port);
     println!("cargo:warning=Secret Key    : {:?}", fw.secret_key);
