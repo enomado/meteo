@@ -27,12 +27,45 @@ pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 /// u16::MAX = «данных ещё нет», LED светит off в normal mode
 pub static LATEST_CO2: AtomicU16 = AtomicU16::new(u16::MAX);
 
+/// Имя бита для лога. LED-код на глаз расшифровывается плохо («были мигания, но
+/// не понял причину»), поэтому каждое изменение статуса и каждый проигранный
+/// blink дублируются в serial словами.
+fn status_name(bit: u8) -> &'static str {
+    match bit {
+        SYS_BUF_OVERFLOW => "BUF_OVERFLOW",
+        SYS_NO_TCP => "NO_TCP",
+        SYS_NO_PERIPH => "NO_PERIPH",
+        SYS_NO_WIFI => "NO_WIFI",
+        SYS_PANIC_RECOVERED => "PANIC_RECOVERED",
+        SYS_WDT_RECOVERED => "WDT_RECOVERED",
+        _ => "UNKNOWN",
+    }
+}
+
+/// Логируем только РЕАЛЬНО изменившиеся биты: set_status зовётся в циклах
+/// (каждый неудачный коннект), и лог «текущего состояния» захлебнулся бы.
+fn log_status_change(changed: u8, added: bool) {
+    for bit_idx in 0u8..6 {
+        let bit = 1u8 << bit_idx;
+        if changed & bit != 0 {
+            esp_println::println!(
+                "led: {} {} ({}x blink)",
+                if added { "SET" } else { "CLEAR" },
+                status_name(bit),
+                bit_idx + 1
+            );
+        }
+    }
+}
+
 pub fn set_status(bits: u8) {
-    SYSTEM_STATUS.fetch_or(bits, Ordering::Relaxed);
+    let prev = SYSTEM_STATUS.fetch_or(bits, Ordering::Relaxed);
+    log_status_change(bits & !prev, true);
 }
 
 pub fn clear_status(bits: u8) {
-    SYSTEM_STATUS.fetch_and(!bits, Ordering::Relaxed);
+    let prev = SYSTEM_STATUS.fetch_and(!bits, Ordering::Relaxed);
+    log_status_change(bits & prev, false);
 }
 
 pub fn publish_co2(co2: u16) {
@@ -254,6 +287,7 @@ async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
             continue;
         }
         let blinks = bit_idx + 1;
+        esp_println::println!("led: blink {}x {}", blinks, status_name(bit));
         let (r, g, b) = blink_color(bit);
         for _ in 0..blinks {
             led.set(r, g, b);
