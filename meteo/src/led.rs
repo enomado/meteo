@@ -277,6 +277,13 @@ fn scale_rgb(rgb: (u8, u8, u8), pct_of_full: u8) -> (u8, u8, u8) {
 /// Сейчас 60с — ошибки сигналятся раз в минуту, не заглушая цвет/дыхание.
 const OVERLAY_INTERVAL_MS: u32 = 60_000;
 
+/// Пауза МЕЖДУ сериями blink'ов в режиме «CO2-данных ещё нет» (старт: SCD41
+/// греется/калибруется десятки секунд). Без неё серии играли встык и это
+/// выглядело как непрерывное мигание (6× голубой = 2.4с работы на 0.7с паузы).
+/// Короче оверлея: в blink-only индикатор больше ничего не показывает, и минута
+/// темноты была бы неотличима от «LED сдох».
+const BLINK_ONLY_GAP_MS: u64 = 8_000;
+
 /// Сыграть blink-коды для активных бит из `only_bits` (приоритет по bit_idx).
 async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
     // 0..6: биты 0-3 — текущий статус, 4-5 — латч аварийного reset (см. led-биты).
@@ -345,6 +352,7 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
             led.fade_to(0, 0, 0, 200);
             if status != 0 {
                 play_blink_codes(&mut led, status).await;
+                Timer::after(Duration::from_millis(BLINK_ONLY_GAP_MS)).await;
             } else {
                 Timer::after(Duration::from_millis(2000)).await;
             }
