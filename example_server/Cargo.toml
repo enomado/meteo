@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 anyhow = "1"

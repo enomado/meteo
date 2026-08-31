@@ -9,46 +9,46 @@ name = "meteo"
 path = "./src/bin/main.rs"
 
 [dependencies]
-cfg-if = { version = "*" }
-static_cell = { version = "*", features = [] }
+cfg-if = { version = "1.0.4" }
+static_cell = { version = "2.1.1", features = [] }
 
-bmp390-rs = { version = "*" }
-libscd = { version = "*", default-features = false, features = ["async", "scd4x", "scd41"] }
+bmp390-rs = { version = "0.4.0" }
+libscd = { version = "0.5.1", default-features = false, features = ["async", "scd4x", "scd41"] }
 
 # Пин 0.8: фича portable-atomic нужна на riscv32imc (нет native CAS); esp-radio
 # тянет heapless 0.9 отдельной копией — наши heapless-типы наружу не уходят.
-heapless = { version = "0.8", features = ["portable-atomic"] }
-portable-atomic = { version = "*" }
-serde = { version = "*", default-features = false, features = ["derive"] }
-postcard = { version = "*" }
-aes-gcm = { version = "*", default-features = false, features = [
+heapless = { version = "0.9", features = ["portable-atomic"] }
+portable-atomic = { version = "1.15.0" }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+postcard = { version = "1.1.3" }
+aes-gcm = { version = "0.11.1", default-features = false, features = [
   "aes",
 ] }
 
 
-sntpc = { version = "*", default-features = false, features = [
+sntpc = { version = "0.11.0", default-features = false, features = [
   "defmt",
   "log",
 ] }
-sntpc-net-embassy = { version = "*", default-features = false, features = [
+sntpc-net-embassy = { version = "0.11.0", default-features = false, features = [
   "defmt",
 ] }
-sntpc-time-embassy = { version = "*", default-features = false }
+sntpc-time-embassy = { version = "0.6.0", default-features = false }
 
-embedded-hal-bus = { version = "*" }
-embedded-nal = { version = "*" }
-embedded-io = { version = "*", features = [
+embedded-hal-bus = { version = "0.3.0" }
+embedded-nal = { version = "0.9.0" }
+embedded-io = { version = "0.7.1", features = [
   # 
   # "defmt-03",
 ] }
-embedded-io-async = { version = "*", features = [
+embedded-io-async = { version = "0.7.0", features = [
   # 
   # "defmt-03",
 ] }
 
 
-defmt = { version = "*", features = [] }
-defmt-rtt = { version = "*", features = [] }
+defmt = { version = "0.3.100", features = [] }
+defmt-rtt = { version = "1.3.0", features = [] }
 
 
 # package = "esp32c3-hal"
@@ -110,14 +110,14 @@ esp-backtrace = { git = "https://github.com/esp-rs/esp-hal", package = "esp-back
   "esp32c3",
 ] }
 
-embassy-sync = { version = "*" }
-embassy-embedded-hal = { version = "*" }
-embassy-executor = { version = "*", features = [
+embassy-sync = { version = "0.8.0" }
+embassy-embedded-hal = { version = "0.6.0" }
+embassy-executor = { version = "0.10.0", features = [
   # "defmt",
   # "task-arena-size-20480",
 ] }
 
-embassy-net = { version = "*", features = [
+embassy-net = { version = "0.9.1", features = [
   "defmt",
   "dhcpv4",
   "medium-ethernet",
@@ -131,7 +131,7 @@ embassy-net = { version = "*", features = [
 
 
 # for more networking protocol support see https://crates.io/crates/edge-net
-embassy-time = { version = "*", features = [
+embassy-time = { version = "0.5.1", features = [
   # 
   # "defmt",
 ] }
@@ -151,7 +151,7 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", br
 ] }
 
 
-smoltcp = { version = "*", default-features = false, features = [
+smoltcp = { version = "0.14.0", default-features = false, features = [
   # "defmt",
   "medium-ethernet",
   "multicast",
@@ -167,7 +167,7 @@ smoltcp = { version = "*", default-features = false, features = [
 
 
 [build-dependencies]
-toml = "*"
+toml = "1.1.4+spec-1.1.0"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
 # - synced to upstream/main `df161e61` (2026-06-16, esp-radio 0.18.0 → 1.0.0-beta.0)
