@@ -38,35 +38,108 @@ pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset
 
 pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 
-/// u16::MAX = «данных ещё нет», LED светит off в normal mode
-pub static LATEST_CO2: AtomicU16 = AtomicU16::new(u16::MAX);
+/// Сентинел «CO2 ещё не измерялся»: атомик не умеет хранить `Option`, поэтому
+/// отсутствие кодируем значением. Наружу отдаём честный `Option` — см.
+/// [`latest_co2`], сравнений с `u16::MAX` в логике быть не должно.
+const NO_CO2: u16 = u16::MAX;
 
-/// Имя бита для лога. LED-код на глаз расшифровывается плохо («были мигания, но
-/// не понял причину»), поэтому каждое изменение статуса и каждый проигранный
-/// blink дублируются в serial словами.
-fn status_name(bit: u8) -> &'static str {
-    match bit {
-        SYS_BUF_OVERFLOW => "BUF_OVERFLOW",
-        SYS_NO_TCP => "NO_TCP",
-        SYS_NO_PERIPH => "NO_PERIPH",
-        SYS_NO_WIFI => "NO_WIFI",
-        SYS_PANIC_RECOVERED => "PANIC_RECOVERED",
-        SYS_WDT_RECOVERED => "WDT_RECOVERED",
-        _ => "UNKNOWN",
+static LATEST_CO2: AtomicU16 = AtomicU16::new(NO_CO2);
+
+/// Яркость канала в процентах (0..=100) — ровно то, что принимает LEDC
+/// `set_duty`. Держим триплет одной структурой: три параллельных `u8`
+/// (cur_r/cur_g/cur_b плюс кортежи в таблицах цветов) слишком легко разъезжаются
+/// и путаются местами.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Rgb {
+    pub const OFF: Rgb = Rgb::new(0, 0, 0);
+
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    /// Затемнение до `pct` процентов от текущей яркости (100 = без изменений).
+    fn scaled(self, pct: u8) -> Self {
+        let s = |c: u8| ((c as u16 * pct as u16) / 100) as u8;
+        Self::new(s(self.r), s(self.g), s(self.b))
     }
 }
+
+/// Яркость blink-кодов (проценты). Заметно выше CO2-палитры: код ошибки должен
+/// читаться с другого конца комнаты.
+const BLINK_LEVEL: u8 = 40;
+
+/// Описание одного статус-бита. Единственный источник правды: маска, имя для
+/// serial-лога и цвет кода раньше лежали в трёх раздельных `match`-ах, и
+/// добавление бита требовало правки каждого (плюс магической «6» в двух циклах).
+struct StatusBit {
+    mask:  u8,
+    /// Имя для serial-лога: LED-код на глаз расшифровывается плохо («были
+    /// мигания, но не понял причину»), поэтому дублируем словами.
+    name:  &'static str,
+    /// `None` — мигать текущим CO2-цветом, см. [`blink_color`].
+    color: Option<Rgb>,
+}
+
+impl StatusBit {
+    /// Число миганий кода. Выводится из позиции бита ⇒ инвариант
+    /// «bit_idx + 1 = число миганий» держится по построению, а не по договору.
+    fn blinks(&self) -> u32 {
+        self.mask.trailing_zeros() + 1
+    }
+}
+
+/// Порядок = приоритет проигрывания (по возрастанию номера бита).
+/// SYS_NO_TCP цвета не имеет намеренно: мигает текущим CO2-цветом, чтобы «нет
+/// сервера» не перекрывало индикацию воздуха.
+const STATUS_BITS: [StatusBit; 6] = [
+    StatusBit {
+        mask:  SYS_BUF_OVERFLOW,
+        name:  "BUF_OVERFLOW",
+        color: Some(Rgb::new(BLINK_LEVEL, BLINK_LEVEL / 2, 0)), // оранжевый — warning
+    },
+    StatusBit {
+        mask:  SYS_NO_TCP,
+        name:  "NO_TCP",
+        color: None, // текущий CO2-цвет
+    },
+    StatusBit {
+        mask:  SYS_NO_PERIPH,
+        name:  "NO_PERIPH",
+        color: Some(Rgb::new(BLINK_LEVEL, 0, BLINK_LEVEL)), // фиолетовый — нет периферии
+    },
+    StatusBit {
+        mask:  SYS_NO_WIFI,
+        name:  "NO_WIFI",
+        color: Some(Rgb::new(BLINK_LEVEL, BLINK_LEVEL, 0)), // жёлтый — нет wifi/ntp
+    },
+    StatusBit {
+        mask:  SYS_PANIC_RECOVERED,
+        name:  "PANIC_RECOVERED",
+        color: Some(Rgb::new(BLINK_LEVEL, BLINK_LEVEL, BLINK_LEVEL)), // белый — после паники
+    },
+    StatusBit {
+        mask:  SYS_WDT_RECOVERED,
+        name:  "WDT_RECOVERED",
+        color: Some(Rgb::new(0, BLINK_LEVEL, BLINK_LEVEL)), // голубой — после зависания
+    },
+];
 
 /// Логируем только РЕАЛЬНО изменившиеся биты: set_status зовётся в циклах
 /// (каждый неудачный коннект), и лог «текущего состояния» захлебнулся бы.
 fn log_status_change(changed: u8, added: bool) {
-    for bit_idx in 0u8..6 {
-        let bit = 1u8 << bit_idx;
-        if changed & bit != 0 {
+    for status in &STATUS_BITS {
+        if changed & status.mask != 0 {
             esp_println::println!(
                 "led: {} {} ({}x blink)",
                 if added { "SET" } else { "CLEAR" },
-                status_name(bit),
-                bit_idx + 1
+                status.name,
+                status.blinks()
             );
         }
     }
@@ -86,13 +159,19 @@ pub fn publish_co2(co2: u16) {
     LATEST_CO2.store(co2, Ordering::Relaxed);
 }
 
+/// Последнее измерение CO2, `None` — сенсор ещё ничего не отдал.
+pub fn latest_co2() -> Option<u16> {
+    match LATEST_CO2.load(Ordering::Relaxed) {
+        NO_CO2 => None,
+        co2 => Some(co2),
+    }
+}
+
 pub struct RgbLed<'a> {
-    r:     channel::Channel<'a, LowSpeed>,
-    g:     channel::Channel<'a, LowSpeed>,
-    b:     channel::Channel<'a, LowSpeed>,
-    cur_r: u8,
-    cur_g: u8,
-    cur_b: u8,
+    r:   channel::Channel<'a, LowSpeed>,
+    g:   channel::Channel<'a, LowSpeed>,
+    b:   channel::Channel<'a, LowSpeed>,
+    cur: Rgb,
 }
 
 /// Поднимает LEDC-таймер (5 кГц, 8-bit duty, APB-clock) и собирает RgbLed на трёх каналах.
@@ -123,9 +202,9 @@ impl<'a> RgbLed<'a> {
     pub fn new(
         ledc: &'a esp_hal::ledc::Ledc<'a>,
         timer: &'a timer::Timer<'a, LowSpeed>,
-        r_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
-        g_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
-        b_pin: impl esp_hal::gpio::interconnect::PeripheralOutput<'a>,
+        r_pin: impl PeripheralOutput<'a>,
+        g_pin: impl PeripheralOutput<'a>,
+        b_pin: impl PeripheralOutput<'a>,
     ) -> Self {
         let ch_config = channel::config::Config {
             timer,
@@ -146,51 +225,30 @@ impl<'a> RgbLed<'a> {
             r,
             g,
             b,
-            cur_r: 0,
-            cur_g: 0,
-            cur_b: 0,
+            cur: Rgb::OFF,
         }
     }
 
     /// Установить яркость каждого канала (0-100%)
-    pub fn set(&mut self, r: u8, g: u8, b: u8) {
-        let _ = self.r.set_duty(r);
-        let _ = self.g.set_duty(g);
-        let _ = self.b.set_duty(b);
-        self.cur_r = r;
-        self.cur_g = g;
-        self.cur_b = b;
-    }
-
-    pub fn off(&mut self) {
-        self.set(0, 0, 0);
+    pub fn set(&mut self, color: Rgb) {
+        let _ = self.r.set_duty(color.r);
+        let _ = self.g.set_duty(color.g);
+        let _ = self.b.set_duty(color.b);
+        self.cur = color;
     }
 
     /// Плавный переход к новому цвету за duration_ms (аппаратный fade)
-    pub fn fade_to(&mut self, r: u8, g: u8, b: u8, duration_ms: u16) {
-        if self.cur_r != r {
-            let _ = self.r.start_duty_fade(self.cur_r, r, duration_ms);
+    pub fn fade_to(&mut self, color: Rgb, duration_ms: u16) {
+        if self.cur.r != color.r {
+            let _ = self.r.start_duty_fade(self.cur.r, color.r, duration_ms);
         }
-        if self.cur_g != g {
-            let _ = self.g.start_duty_fade(self.cur_g, g, duration_ms);
+        if self.cur.g != color.g {
+            let _ = self.g.start_duty_fade(self.cur.g, color.g, duration_ms);
         }
-        if self.cur_b != b {
-            let _ = self.b.start_duty_fade(self.cur_b, b, duration_ms);
+        if self.cur.b != color.b {
+            let _ = self.b.start_duty_fade(self.cur.b, color.b, duration_ms);
         }
-        self.cur_r = r;
-        self.cur_g = g;
-        self.cur_b = b;
-    }
-
-    /// CO2 уровень → плавный RGB
-    ///
-    /// - 0-700 ppm: зелёный
-    /// - 700-1000 ppm: зелёный → жёлтый
-    /// - 1000-1500 ppm: жёлтый → красный
-    /// - 1500+ ppm: красный
-    pub fn set_co2(&mut self, co2: u16) {
-        let (r, g, b) = co2_to_rgb(co2);
-        self.fade_to(r, g, b, 500);
+        self.cur = color;
     }
 
     /// Тест при старте: плавные переливы R → G → B → W → off.
@@ -202,50 +260,34 @@ impl<'a> RgbLed<'a> {
         const D: u16 = 400;
         const B: u8 = 30;
 
-        let sequence: [(u8, u8, u8, &str); 5] = [
-            (B, 0, 0, "RED"),
-            (0, B, 0, "GREEN"),
-            (0, 0, B, "BLUE"),
-            (B, B, B, "WHITE"),
-            (0, 0, 0, "OFF"),
+        let sequence: [(Rgb, &str); 5] = [
+            (Rgb::new(B, 0, 0), "RED"),
+            (Rgb::new(0, B, 0), "GREEN"),
+            (Rgb::new(0, 0, B), "BLUE"),
+            (Rgb::new(B, B, B), "WHITE"),
+            (Rgb::OFF, "OFF"),
         ];
 
-        for (r, g, b, name) in sequence {
+        for (color, name) in sequence {
             println!("LED test: {}", name);
-            self.fade_to(r, g, b, D);
+            self.fade_to(color, D);
             Timer::after(Duration::from_millis(D as u64)).await;
         }
     }
 }
 
-/// Цвет blink-кода ошибки (в процентах яркости).
-/// SYS_NO_TCP не имеет фиксированного цвета — мигает текущим CO2-цветом
-/// (см. blink_color), чтобы "нет сервера" не перекрывал индикацию воздуха.
-fn error_color(bit: u8) -> (u8, u8, u8) {
-    const B: u8 = 40;
-    match bit {
-        SYS_BUF_OVERFLOW => (B, B / 2, 0), // оранжевый — warning
-        SYS_NO_PERIPH => (B, 0, B),        // фиолетовый — нет периферии
-        SYS_NO_WIFI => (B, B, 0),          // жёлтый — нет wifi/ntp
-        SYS_PANIC_RECOVERED => (B, B, B),  // белый — восстановился после паники
-        SYS_WDT_RECOVERED => (0, B, B),    // голубой — восстановился после зависания
-        _ => (B, 0, 0),
-    }
-}
-
-/// Цвет конкретного blink-overlay'я. Для NO_TCP берём текущий CO2-цвет,
-/// иначе фиксированный error_color.
-fn blink_color(bit: u8) -> (u8, u8, u8) {
-    if bit == SYS_NO_TCP {
-        let co2 = LATEST_CO2.load(Ordering::Relaxed);
-        if co2 != u16::MAX {
-            return co2_to_rgb(co2);
+/// Цвет конкретного blink-overlay'я. Бит без фиксированного цвета мигает текущим
+/// CO2-цветом; пока CO2 неизвестен — синим.
+fn blink_color(status: &StatusBit) -> Rgb {
+    match status.color {
+        Some(color) => color,
+        None => {
+            match latest_co2() {
+                Some(co2) => co2_to_rgb(co2),
+                None => Rgb::new(0, 0, BLINK_LEVEL),
+            }
         }
-        // CO2 ещё неизвестен — fallback на старый синий
-        const B: u8 = 40;
-        return (0, 0, B);
     }
-    error_color(bit)
 }
 
 /// Параметры breathing-пульса для повышенного CO2.
@@ -289,11 +331,6 @@ fn pulse_params(co2: u16) -> Option<PulseSpec> {
     }
 }
 
-fn scale_rgb(rgb: (u8, u8, u8), pct_of_full: u8) -> (u8, u8, u8) {
-    let s = |c: u8| ((c as u16 * pct_of_full as u16) / 100) as u8;
-    (s(rgb.0), s(rgb.1), s(rgb.2))
-}
-
 /// Как часто проигрывать статус-оверлей (потеря связи и пр. ошибки) поверх
 /// CO2-сигнала. Настраиваемая «крутилка»: правится здесь, одним числом.
 /// Сейчас 60с — ошибки сигналятся раз в минуту, не заглушая цвет/дыхание.
@@ -306,22 +343,19 @@ const OVERLAY_INTERVAL_MS: u32 = 60_000;
 /// темноты была бы неотличима от «LED сдох».
 const BLINK_ONLY_GAP_MS: u64 = 8_000;
 
-/// Сыграть blink-коды для активных бит из `only_bits` (приоритет по bit_idx).
+/// Сыграть blink-коды для активных бит из `only_bits` (приоритет по номеру бита).
 async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
-    // 0..6: биты 0-3 — текущий статус, 4-5 — латч аварийного reset (см. led-биты).
-    for bit_idx in 0u8..6 {
-        let bit = 1u8 << bit_idx;
+    for status in &STATUS_BITS {
         // перечитываем актуальный статус — бит мог погаснуть пока играли предыдущий
-        if SYSTEM_STATUS.load(Ordering::Relaxed) & only_bits & bit == 0 {
+        if SYSTEM_STATUS.load(Ordering::Relaxed) & only_bits & status.mask == 0 {
             continue;
         }
-        let blinks = bit_idx + 1;
-        esp_println::println!("led: blink {}x {}", blinks, status_name(bit));
-        let (r, g, b) = blink_color(bit);
-        for _ in 0..blinks {
-            led.set(r, g, b);
+        esp_println::println!("led: blink {}x {}", status.blinks(), status.name);
+        let color = blink_color(status);
+        for _ in 0..status.blinks() {
+            led.set(color);
             Timer::after(Duration::from_millis(180)).await;
-            led.set(0, 0, 0);
+            led.set(Rgb::OFF);
             Timer::after(Duration::from_millis(220)).await;
         }
         Timer::after(Duration::from_millis(700)).await;
@@ -334,18 +368,18 @@ async fn play_co2_step(led: &mut RgbLed<'_>, co2: u16) -> u32 {
     let bright = co2_to_rgb(co2);
     match pulse_params(co2) {
         None => {
-            led.fade_to(bright.0, bright.1, bright.2, 500);
+            led.fade_to(bright, 500);
             Timer::after(Duration::from_millis(2000)).await;
             2000
         }
         Some(p) => {
-            let dim = scale_rgb(bright, 100 - p.depth_pct);
+            let dim = bright.scaled(100 - p.depth_pct);
             let half = p.period_ms / 2;
             // вдох
-            led.fade_to(bright.0, bright.1, bright.2, half);
+            led.fade_to(bright, half);
             Timer::after(Duration::from_millis(half as u64)).await;
             // выдох
-            led.fade_to(dim.0, dim.1, dim.2, half);
+            led.fade_to(dim, half);
             Timer::after(Duration::from_millis(half as u64)).await;
             p.period_ms as u32
         }
@@ -365,13 +399,11 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
 
     loop {
         let status = SYSTEM_STATUS.load(Ordering::Relaxed);
-        let co2 = LATEST_CO2.load(Ordering::Relaxed);
-        let has_co2 = co2 != u16::MAX && (status & SYS_NO_PERIPH) == 0;
-
-        if !has_co2 {
+        // При SYS_NO_PERIPH последнее показание считаем протухшим: сенсор отвалился.
+        let Some(co2) = latest_co2().filter(|_| status & SYS_NO_PERIPH == 0) else {
             // CO2-канал нечем заполнять: играем blink активных бит
             // (или просто ждём, если ошибок нет и мы ждём первое чтение).
-            led.fade_to(0, 0, 0, 200);
+            led.fade_to(Rgb::OFF, 200);
             if status != 0 {
                 play_blink_codes(&mut led, status).await;
                 Timer::after(Duration::from_millis(BLINK_ONLY_GAP_MS)).await;
@@ -380,7 +412,7 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
             }
             since_overlay_ms = 0;
             continue;
-        }
+        };
 
         // CO2 mode — основной канал, работает всегда когда есть данные.
         since_overlay_ms += play_co2_step(&mut led, co2).await;
@@ -389,7 +421,7 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
         // Перечитываем статус — бит мог появиться/исчезнуть пока играли CO2-step.
         let status_now = SYSTEM_STATUS.load(Ordering::Relaxed);
         if status_now != 0 && since_overlay_ms >= OVERLAY_INTERVAL_MS {
-            led.fade_to(0, 0, 0, 200);
+            led.fade_to(Rgb::OFF, 200);
             Timer::after(Duration::from_millis(300)).await;
             play_blink_codes(&mut led, status_now).await;
             since_overlay_ms = 0;
@@ -407,7 +439,7 @@ fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
     ((co2 - lo) as f32) / ((hi - lo) as f32)
 }
 
-/// CO2 ppm → (R%, G%, B%), яркость в долях `MAX`.
+/// CO2 ppm → цвет, яркость в долях `MAX`.
 ///
 /// Детализированная зона 400-700 — основная зона мониторинга проветривания.
 /// - 0-400: чистый зелёный
@@ -415,18 +447,18 @@ fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
 /// - 700-1000: жёлтый → оранжевый
 /// - 1000-1500: оранжевый → красный (тут включается breathing pulse)
 /// - 1500+: чистый красный
-pub fn co2_to_rgb(co2: u16) -> (u8, u8, u8) {
+pub fn co2_to_rgb(co2: u16) -> Rgb {
     const MAX: u8 = 30;
     let m = MAX as f32;
 
     match co2 {
-        0..=400 => (0, MAX, 0),
+        0..=400 => Rgb::new(0, MAX, 0),
         // зелёный → жёлтый: красный канал поднимается 0 → MAX
-        401..=700 => (lerp(0.0, m, segment_t(co2, 400, 700)), MAX, 0),
+        401..=700 => Rgb::new(lerp(0.0, m, segment_t(co2, 400, 700)), MAX, 0),
         // жёлтый → оранжевый: зелёный канал падает MAX → MAX/2
-        701..=1000 => (MAX, lerp(m, m * 0.5, segment_t(co2, 700, 1000)), 0),
+        701..=1000 => Rgb::new(MAX, lerp(m, m * 0.5, segment_t(co2, 700, 1000)), 0),
         // оранжевый → красный: зелёный канал падает MAX/2 → 0
-        1001..=1500 => (MAX, lerp(m * 0.5, 0.0, segment_t(co2, 1000, 1500)), 0),
-        _ => (MAX, 0, 0),
+        1001..=1500 => Rgb::new(MAX, lerp(m * 0.5, 0.0, segment_t(co2, 1000, 1500)), 0),
+        _ => Rgb::new(MAX, 0, 0),
     }
 }

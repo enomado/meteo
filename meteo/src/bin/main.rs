@@ -25,6 +25,13 @@ use esp_rtos as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
+use meteo::led::{
+    SYS_PANIC_RECOVERED,
+    SYS_WDT_RECOVERED,
+    init_rgb_led,
+    led_loop,
+    set_status,
+};
 use meteo::mk_static;
 use meteo::network::{
     connection,
@@ -35,6 +42,11 @@ use meteo::ntp_client::ntp_sync_loop;
 use meteo::sensor::{
     SensorPeripherals,
     sensor_loop,
+};
+use meteo::watchdog::{
+    BootFault,
+    take_boot_fault,
+    watchdog_loop,
 };
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
@@ -50,23 +62,23 @@ async fn main(spawner: Spawner) -> ! {
     // Причина этого boot'а из RTC-маркера: если предыдущий запуск упал в панику
     // или завис (watchdog), latch'им LED-бит — чтобы факт аварии был виден
     // визуально даже без serial (иначе авто-reset тихо прячет проблему).
-    let (boot_fault, fault_count) = meteo::watchdog::take_boot_fault();
-    match boot_fault {
-        meteo::watchdog::FAULT_PANIC => {
+    let boot = take_boot_fault();
+    match boot.fault {
+        BootFault::Panic => {
             println!(
                 "BOOT: recovered from PANIC (faults this power-session: {})",
-                fault_count
+                boot.faults_since_power_on
             );
-            meteo::led::set_status(meteo::led::SYS_PANIC_RECOVERED);
+            set_status(SYS_PANIC_RECOVERED);
         }
-        meteo::watchdog::FAULT_WDT_STALL => {
+        BootFault::WdtStall => {
             println!(
                 "BOOT: recovered from WATCHDOG STALL (faults this power-session: {})",
-                fault_count
+                boot.faults_since_power_on
             );
-            meteo::led::set_status(meteo::led::SYS_WDT_RECOVERED);
+            set_status(SYS_WDT_RECOVERED);
         }
-        _ => println!("BOOT: clean start"),
+        BootFault::Clean => println!("BOOT: clean start"),
     }
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -78,7 +90,7 @@ async fn main(spawner: Spawner) -> ! {
     // паники ловит custom_halt. Спавним после esp_rtos::start (как остальные
     // таски); feeder держит boot-grace сам (не ресетит пока таски не оживут).
     let rtc = Rtc::new(peripherals.LPWR);
-    spawner.spawn(meteo::watchdog::watchdog_loop(rtc.rwdt).unwrap());
+    spawner.spawn(watchdog_loop(rtc.rwdt).unwrap());
 
     let rng = Rng::new();
 
@@ -105,13 +117,13 @@ async fn main(spawner: Spawner) -> ! {
 
     let wifi_interface = esp_radio::wifi::Interface::station();
 
-    let config = embassy_net::Config::dhcpv4(Default::default());
+    let net_config = embassy_net::Config::dhcpv4(Default::default());
 
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     let (stack, runner) = embassy_net::new(
         wifi_interface,
-        config,
+        net_config,
         mk_static!(StackResources<7>, StackResources::<7>::new()),
         seed,
     );
@@ -120,13 +132,13 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(connection(controller).unwrap());
 
     // --- RGB LED (LEDC PWM) на GPIO3=R, GPIO4=G, GPIO5=B ---
-    let rgb_led = meteo::led::init_rgb_led(
+    let rgb_led = init_rgb_led(
         peripherals.LEDC,
         peripherals.GPIO3,
         peripherals.GPIO4,
         peripherals.GPIO5,
     );
-    spawner.spawn(meteo::led::led_loop(rgb_led).unwrap());
+    spawner.spawn(led_loop(rgb_led).unwrap());
 
     spawner.spawn(
         sensor_loop(SensorPeripherals {

@@ -47,7 +47,8 @@ use crate::led::{
 };
 use crate::ntp_client::{
     CLOCK_IS_SYNCED_WATCH,
-    get_current_time_epoch,
+    EpochMillis,
+    now_epoch,
 };
 use crate::spi_helper::BarometerArgs;
 
@@ -80,6 +81,42 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
     }
 }
 
+/// Результат одного опроса BMP390. «Ещё не готов» — штатное состояние (ODR
+/// ~0.05 Гц), а не ошибка: реакция на них разная, поэтому состояния разведены.
+enum BaroPoll {
+    Ready(BaroReading),
+    NotReady,
+    /// Ошибка шины. НЕ паникуем (было: `.unwrap()` → reset всего чипа на
+    /// транзиенте SPI) — вызывающий решает, ретраить или пропустить цикл.
+    Failed,
+}
+
+/// Один опрос BMP390: статус drdy → чтение. Ошибки шины логируются здесь,
+/// решение (ретрай / пропуск цикла / SYS_NO_PERIPH) принимает вызывающий.
+async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> BaroPoll {
+    match barometer.read::<IntStatus>().await {
+        Ok(status) if !status.drdy => BaroPoll::NotReady,
+        Ok(_) => {
+            match barometer.read_sensor_data().await {
+                Ok(data) => {
+                    BaroPoll::Ready(BaroReading {
+                        pressure: data.pressure(),
+                        temp:     data.temperature(),
+                    })
+                }
+                Err(e) => {
+                    println!("BMP390: read_sensor_data error: {:?}", e);
+                    BaroPoll::Failed
+                }
+            }
+        }
+        Err(e) => {
+            println!("BMP390: status read error: {:?}", e);
+            BaroPoll::Failed
+        }
+    }
+}
+
 /// Калибровка SCD41 temperature offset по показанию BMP390.
 /// Делает single-shot SCD41, ждёт drdy на барометре, считает дельту и пишет новый offset.
 /// Если барометра нет / он не отдал данные — offset не трогаем.
@@ -102,20 +139,9 @@ async fn calibrate_temp_offset(scd: &mut ScdDevice<'_>, barometer: Option<&mut B
     let mut bmp_temp = None;
     if let Some(barometer) = barometer {
         for _ in 0..10 {
-            match barometer.read::<IntStatus>().await {
-                Ok(status) if status.drdy => {
-                    match barometer.read_sensor_data().await {
-                        Ok(data) => {
-                            bmp_temp = Some(data.temperature());
-                            break;
-                        }
-                        Err(e) => {
-                            println!("SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}", e)
-                        }
-                    }
-                }
-                Ok(_) => {} // не drdy ещё — ждём и ретраим
-                Err(e) => println!("SCD41 cal: BMP390 status read error, retrying: {:?}", e),
+            if let BaroPoll::Ready(reading) = poll_barometer(barometer).await {
+                bmp_temp = Some(reading.temp);
+                break;
             }
             Timer::after(Duration::from_secs(2)).await;
         }
@@ -188,8 +214,7 @@ pub struct ScdReading {
 pub struct SensorData {
     pub baro: Option<BaroReading>,
     pub scd:  Option<ScdReading>,
-    /// millis epoch
-    pub time: u64,
+    pub time: EpochMillis,
 }
 
 pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> = Mutex::new(Queue::new());
@@ -201,8 +226,10 @@ async fn enqueue_sensor_data(mdata: SensorData) {
             clear_status(SYS_BUF_OVERFLOW);
         }
         Err(el) => {
-            p.dequeue().unwrap();
-            p.enqueue(el).unwrap();
+            // Очередь полна ⇒ в ней есть хотя бы один элемент, и после dequeue
+            // ровно одно место свободно: оба вызова не могут не сработать.
+            p.dequeue().expect("full queue has at least one entry");
+            p.enqueue(el).expect("dequeue freed exactly one slot");
             set_status(SYS_BUF_OVERFLOW);
         }
     }
@@ -299,27 +326,14 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         // цикле, ставим SYS_NO_PERIPH — как для SCD41 ниже.
         let mut baro: Option<BaroReading> = None;
         if let Some(ref mut barometer) = barometer {
-            match barometer.read::<IntStatus>().await {
-                Ok(status) if status.drdy => {
-                    match barometer.read_sensor_data().await {
-                        Ok(data) => {
-                            let pressure = data.pressure();
-                            let temp = data.temperature();
-                            last_pressure_hpa = Some((pressure / 100.0) as u16);
-                            println!("BMP390: P={:.1} T={:.2}", pressure, temp);
-                            baro = Some(BaroReading { pressure, temp });
-                        }
-                        Err(e) => {
-                            println!("BMP390: read_sensor_data error: {:?}", e);
-                            set_status(SYS_NO_PERIPH);
-                        }
-                    }
+            match poll_barometer(barometer).await {
+                BaroPoll::Ready(reading) => {
+                    last_pressure_hpa = Some((reading.pressure / 100.0) as u16);
+                    println!("BMP390: P={:.1} T={:.2}", reading.pressure, reading.temp);
+                    baro = Some(reading);
                 }
-                Ok(_) => {} // не drdy — штатно, ждём следующий цикл
-                Err(e) => {
-                    println!("BMP390: status read error: {:?}", e);
-                    set_status(SYS_NO_PERIPH);
-                }
+                BaroPoll::NotReady => {} // не drdy — штатно, ждём следующий цикл
+                BaroPoll::Failed => set_status(SYS_NO_PERIPH),
             }
         }
 
@@ -374,7 +388,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
             let mdata = SensorData {
                 baro,
                 scd: scd_reading,
-                time: get_current_time_epoch(),
+                time: now_epoch(),
             };
             enqueue_sensor_data(mdata).await;
         }

@@ -69,11 +69,47 @@ pub fn beat_net() {
 /// "mt" + версия формата. Отличает валидный маркер от мусора холодного старта.
 const FAULT_MAGIC: u32 = 0x6D74_0001;
 
-pub const FAULT_NONE: u32 = 0;
-/// Reset вызван паникой (`custom_halt`).
-pub const FAULT_PANIC: u32 = 1;
-/// Reset вызван watchdog'ом (таска зависла, feed прекращён).
-pub const FAULT_WDT_STALL: u32 = 2;
+/// Причина, по которой чип перезагрузился. В RTC-слове живёт числом
+/// (`Persistable` умеет только скаляры), наружу отдаётся перечислением: `match`
+/// на буте обязан быть исчерпывающим, иначе новый код тихо уедет в «clean start».
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BootFault {
+    /// Штатный старт: подача питания, кнопка reset, чистая перезагрузка.
+    Clean,
+    /// Reset вызван паникой (`custom_halt`).
+    Panic,
+    /// Reset вызван watchdog'ом (таска зависла, feed прекращён).
+    WdtStall,
+}
+
+impl BootFault {
+    /// Код в RTC-слове. Значения фиксированы: слово переживает reset, менять их
+    /// — терять причину предыдущего boot'а.
+    fn code(self) -> u32 {
+        match self {
+            BootFault::Clean => 0,
+            BootFault::Panic => 1,
+            BootFault::WdtStall => 2,
+        }
+    }
+
+    /// Обратное преобразование. При валидной магии в слове лежит только то, что
+    /// записал `code()`, поэтому неизвестное значение трактуем как чистый старт.
+    fn from_code(code: u32) -> Self {
+        match code {
+            1 => BootFault::Panic,
+            2 => BootFault::WdtStall,
+            _ => BootFault::Clean,
+        }
+    }
+}
+
+/// Итог чтения RTC-маркера на буте.
+pub struct BootReport {
+    pub fault:                 BootFault,
+    /// Сколько раз страховки срабатывали с последнего power-on.
+    pub faults_since_power_on: u32,
+}
 
 #[ram(unstable(rtc_fast, persistent))]
 static RTC_MAGIC: AtomicU32 = AtomicU32::new(0);
@@ -86,30 +122,35 @@ static RTC_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Записать причину предстоящего reset. Зовётся из паник-хендлера и watchdog'а
 /// перед тем как чип перезагрузится. Предполагает, что магия уже инициализи-
 /// рована на буте (`take_boot_fault`), поэтому счётчик валиден.
-fn record_fault(code: u32) {
+fn record_fault(fault: BootFault) {
     RTC_MAGIC.store(FAULT_MAGIC, Ordering::Relaxed);
-    RTC_FAULT_CODE.store(code, Ordering::Relaxed);
+    RTC_FAULT_CODE.store(fault.code(), Ordering::Relaxed);
     RTC_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Прочитать причину ТЕКУЩЕГО boot'а и перевзвести маркер на будущее.
-/// Возвращает `(code, total_count_since_power_on)`. Вызывать один раз в начале
-/// main.
+/// Вызывать один раз в начале main.
 /// - Магия валидна ⇒ этот boot после fault-reset: возвращаем код и счётчик, код
 ///   чистим (чтобы будущий чистый reset не показал устаревшую причину), магию и
 ///   счётчик сохраняем.
 /// - Магия невалидна ⇒ холодный старт (power-on): инициализируем область нулями.
-pub fn take_boot_fault() -> (u32, u32) {
+pub fn take_boot_fault() -> BootReport {
     if RTC_MAGIC.load(Ordering::Relaxed) == FAULT_MAGIC {
-        let code = RTC_FAULT_CODE.load(Ordering::Relaxed);
-        let count = RTC_FAULT_COUNT.load(Ordering::Relaxed);
-        RTC_FAULT_CODE.store(FAULT_NONE, Ordering::Relaxed);
-        (code, count)
+        let fault = BootFault::from_code(RTC_FAULT_CODE.load(Ordering::Relaxed));
+        let faults_since_power_on = RTC_FAULT_COUNT.load(Ordering::Relaxed);
+        RTC_FAULT_CODE.store(BootFault::Clean.code(), Ordering::Relaxed);
+        BootReport {
+            fault,
+            faults_since_power_on,
+        }
     } else {
         RTC_MAGIC.store(FAULT_MAGIC, Ordering::Relaxed);
-        RTC_FAULT_CODE.store(FAULT_NONE, Ordering::Relaxed);
+        RTC_FAULT_CODE.store(BootFault::Clean.code(), Ordering::Relaxed);
         RTC_FAULT_COUNT.store(0, Ordering::Relaxed);
-        (FAULT_NONE, 0)
+        BootReport {
+            fault:                 BootFault::Clean,
+            faults_since_power_on: 0,
+        }
     }
 }
 
@@ -120,7 +161,7 @@ pub fn take_boot_fault() -> (u32, u32) {
 #[unsafe(no_mangle)]
 extern "Rust" fn custom_halt() -> ! {
     // Пометить причину для LED-сигнала после reset, затем перезагрузиться.
-    record_fault(FAULT_PANIC);
+    record_fault(BootFault::Panic);
     esp_hal::system::software_reset()
 }
 
@@ -192,7 +233,7 @@ pub async fn watchdog_loop(mut rwdt: Rwdt) {
         } else {
             // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет уйти.
             if !stall_recorded {
-                record_fault(FAULT_WDT_STALL);
+                record_fault(BootFault::WdtStall);
                 stall_recorded = true;
             }
             println!(

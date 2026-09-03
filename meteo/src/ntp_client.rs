@@ -9,7 +9,6 @@ use embassy_net::udp::{
     PacketMetadata,
     UdpSocket,
 };
-use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::watch::Watch;
 use embassy_time::{
@@ -19,6 +18,10 @@ use embassy_time::{
     with_timeout,
 };
 use esp_println::println;
+use portable_atomic::{
+    AtomicI64,
+    Ordering,
+};
 use sntpc::{
     NtpContext,
     NtpResult,
@@ -32,18 +35,34 @@ const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
 const NTP_RETRY_DELAY: Duration = Duration::from_secs(5);
 const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
 
-// CURRENT_OFFSET = wall-clock-at-boot в микросекундах от UNIX epoch.
-// epoch_now = Instant::now() (с момента boot) + CURRENT_OFFSET.
-// Initial value — baked-in default до первого успешного NTP-sync.
-pub static CURRENT_OFFSET: Mutex<CriticalSectionRawMutex, i64> = Mutex::new(1757986271840363);
+/// Wall-clock в миллисекундах от UNIX epoch. Единица измерения — часть типа:
+/// рядом ходят микросекунды NTP-оффсета и `Instant` с момента boot, и голый
+/// `u64` их не различал. На проводе остаётся числом: postcard сериализует
+/// newtype прозрачно, формат пакета не меняется.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EpochMillis(pub u64);
 
-pub fn get_current_time_epoch() -> u64 {
-    let instant = Instant::now();
-    let ntp_offset = CURRENT_OFFSET.lock(|s| *s) / 1000;
-    instant.as_millis() + ntp_offset as u64
+/// Смещение от локальных часов к wall-clock, в МИКРОсекундах: так его отдаёт
+/// `NtpResult::offset()`, а `EmbassyTimestampGenerator` считает «системным
+/// временем» `Instant` с момента boot ⇒ offset == wall-clock на буте.
+/// Атомик (не `Mutex` + `unsafe lock_mut`): значение скалярное, читается из
+/// sensor-таски, пишется из ntp-таски.
+static CURRENT_OFFSET_US: AtomicI64 = AtomicI64::new(DEFAULT_OFFSET_US);
+
+/// Baked-in значение до первого успешного NTP-синка: 2025-09-16 01:31 UTC.
+/// Показания с таким временем в серверный буфер НЕ попадают (sensor_loop ждёт
+/// `CLOCK_IS_SYNCED_WATCH`), оно нужно лишь чтобы часы вообще были монотонны.
+const DEFAULT_OFFSET_US: i64 = 1_757_986_271_840_363;
+
+pub fn now_epoch() -> EpochMillis {
+    let since_boot_ms = Instant::now().as_millis();
+    let offset_ms = CURRENT_OFFSET_US.load(Ordering::Relaxed) / 1000;
+    // wrapping: при вменяемом оффсете переполнения нет, но паника здесь морозила
+    // бы чип (см. crate::watchdog) — цена битого таймстампа несопоставима.
+    EpochMillis(since_boot_ms.wrapping_add(offset_ms as u64))
 }
 
-pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
+async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     // Create UDP socket
     let mut rx_meta = [PacketMetadata::EMPTY; 16];
     let mut rx_buffer = [0; 4096];
@@ -85,7 +104,7 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
 pub static CLOCK_IS_SYNCED_WATCH: Watch<CriticalSectionRawMutex, bool, 2> = Watch::new();
 // MultiWakerRegistration
 
-/// Одна попытка NTP-запроса с таймаутом. На успехе обновляет CURRENT_OFFSET.
+/// Одна попытка NTP-запроса с таймаутом. На успехе обновляет `CURRENT_OFFSET_US`.
 async fn try_sync(stack: Stack<'_>) -> bool {
     println!("checking time");
 
@@ -99,8 +118,7 @@ async fn try_sync(stack: Stack<'_>) -> bool {
 
     let Some(pp) = res else { return false };
 
-    let off = pp.offset();
-    unsafe { CURRENT_OFFSET.lock_mut(|s| *s = off) };
+    CURRENT_OFFSET_US.store(pp.offset(), Ordering::Relaxed);
     true
 }
 

@@ -1,34 +1,6 @@
-#[allow(unused_imports)]
-use std::{
-    env,
-    fs,
-    net::{
-        IpAddr,
-        Ipv4Addr,
-    },
-    path::PathBuf,
-};
+use std::net::Ipv4Addr;
 
-#[allow(dead_code)]
-/// Преобразует IpAddr в Rust-литерал
-pub fn ip_literal(ip: IpAddr) -> String {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            format!(
-                "core::net::IpAddr::V4(core::net::Ipv4Addr::new({}, {}, {}, {}))",
-                o[0], o[1], o[2], o[3]
-            )
-        }
-        IpAddr::V6(v6) => {
-            let s = v6.segments();
-            format!(
-                "core::net::IpAddr::V6(core::net::Ipv6Addr::new({}, {}, {}, {}, {}, {}, {}, {}))",
-                s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]
-            )
-        }
-    }
-}
+use toml::Value;
 
 pub struct FirmwareConfig {
     /// Сети в порядке из конфига: [0] — основная, [1] — опциональная wifi2.
@@ -38,8 +10,6 @@ pub struct FirmwareConfig {
     pub server_port:   u16,
     pub secret_key:    [u8; 16],
 }
-
-use toml::Value;
 
 pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     let doc: Value = toml::from_str(toml_str).expect("invalid TOML");
@@ -100,7 +70,7 @@ pub fn hex_to_u8_16(hex: &str) -> [u8; 16] {
     bytes
 }
 
-pub fn ipv4_literal(ip: std::net::Ipv4Addr) -> String {
+pub fn ipv4_literal(ip: Ipv4Addr) -> String {
     let octets = ip.octets();
     format!(
         "core::net::Ipv4Addr::new({}, {}, {}, {})",

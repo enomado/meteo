@@ -105,9 +105,9 @@ async fn read_packet(socket: &mut TcpStream, nonce_counter: u64) -> anyhow::Resu
     let cipher = Aes128Gcm::new_from_slice(&KEY).expect("16-byte key");
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let plaintext = cipher
-        .decrypt(nonce, cipher_buf.as_ref())
+        .decrypt(&nonce, cipher_buf.as_ref())
         .ok()
         .context("AES-GCM decrypt failed (wrong key or out-of-sync nonce?)")?;
 

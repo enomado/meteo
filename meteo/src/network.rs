@@ -21,8 +21,6 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
-use heapless::Vec;
-use postcard;
 
 use crate::led::{
     SYS_NO_TCP,
@@ -134,14 +132,22 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 
+/// Ёмкость батча в памяти. Заполняется не полностью — фактический размер режет
+/// `MAX_BATCH`; запас нужен, чтобы буфер не пришлось трогать при правке батча.
+const BATCH_CAP: usize = 40;
+
+/// Батч показаний между очередью сенсора и сокетом. Алиас, потому что ёмкость
+/// раньше повторялась литералом в трёх сигнатурах и разъезжалась при правке.
+type SensorBatch = heapless::Vec<SensorData, BATCH_CAP>;
+
 /// Максимум записей в один пакет. Бюджет postcard в write_packet = 1004 байта
 /// (body_buf[4..1024-16]); одна SensorData ≤ ~32 байт (baro 9 + scd 13 + time 10
 /// varint). 24 × 32 + 1 = 769 < 1004 — с большим запасом, overflow невозможен.
 /// Остаток очереди (до 60) дренится следующими пакетами (каждые ~3с).
 const MAX_BATCH: usize = 24;
 
-pub async fn get_sensor_data_chunk() -> heapless::Vec<SensorData, 40> {
-    let mut out = heapless::Vec::<_, 40>::new();
+async fn get_sensor_data_chunk() -> SensorBatch {
+    let mut out = SensorBatch::new();
     let Ok(mut p) = SENSOR_QUE.try_lock() else {
         return out;
     };
@@ -173,7 +179,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     // let remote_endpoint = (Ipv4Addr::new(188, 245, 58, 248), 1234);
     let remote_endpoint = (SERVER_IP, SERVER_PORT);
 
-    let mut measurements_buf: heapless::Vec<SensorData, 40> = Vec::new();
+    let mut measurements_buf = SensorBatch::new();
 
     loop {
         // heartbeat для watchdog (внешний цикл: реконнект). Бьётся даже когда
@@ -195,7 +201,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         println!("connected!");
         clear_status(SYS_NO_TCP);
 
-        let mut noonce = 0u64;
+        // Счётчик nonce живёт внутри соединения: сервер считает пакеты с 1 на
+        // каждый accept (см. example_server), поэтому обнуляем на реконнекте.
+        let mut nonce_counter = 0u64;
 
         loop {
             // heartbeat для watchdog (внутренний цикл: send). ≤3с при данных,
@@ -213,9 +221,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                 continue;
             }
 
-            noonce += 1;
-            println!("sending {} measurements, nonce={}", p.len(), noonce);
-            let r = write_packet(&mut socket, p, noonce).await;
+            nonce_counter += 1;
+            println!("sending {} measurements, nonce={}", p.len(), nonce_counter);
+            let r = write_packet(&mut socket, p, nonce_counter).await;
 
             match r {
                 Ok(g) => {
@@ -247,7 +255,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 /// Ошибка отправки пакета. Разделяем сериализацию и транспорт: overflow буфера
 /// — НЕ повод рвать соединение (и тем более паниковать), а TCP-ошибка — повод
 /// реконнекта.
-pub enum SendError {
+enum SendError {
     /// postcard не влез в фикс-буфер (батч слишком большой). При MAX_BATCH
     /// недостижимо; пришло на смену `.unwrap()`, который морозил чип.
     Serialize,
@@ -258,19 +266,22 @@ pub enum SendError {
 /// On-wire layout: `[u32 BE payload_len][AES-GCM ciphertext][16-byte tag]`
 /// где `payload_len` = ciphertext_len + 16 (tag inline).
 /// Шифруем in-place в `body_buf[4..]`, tag дописываем сразу после — без heap-Vec.
-pub async fn write_packet(
+async fn write_packet(
     socket: &mut TcpSocket<'_>,
-    p: &Vec<SensorData, 40>,
+    p: &SensorBatch,
     nonce_counter: u64,
 ) -> Result<usize, SendError> {
+    /// Длина префикса `u32 BE payload_len` перед шифротекстом.
+    const LEN_PREFIX: usize = 4;
     const TAG_LEN: usize = 16;
     const BUF_LEN: usize = 1024;
     let mut body_buf = [0u8; BUF_LEN];
 
-    // postcard в body_buf[4..], оставив запас под tag в конце. Overflow → Err
-    // (НЕ паника): при MAX_BATCH недостижимо, но fail-safe важнее — паника здесь
-    // морозила чип навсегда (инцидент 2026-07-04).
-    let plain_len = match postcard::to_slice(p.as_slice(), &mut body_buf[4..BUF_LEN - TAG_LEN]) {
+    // postcard в body_buf[LEN_PREFIX..], оставив запас под tag в конце. Overflow
+    // → Err (НЕ паника): при MAX_BATCH недостижимо, но fail-safe важнее — паника
+    // здесь морозила чип навсегда (инцидент 2026-07-04).
+    let body = &mut body_buf[LEN_PREFIX..BUF_LEN - TAG_LEN];
+    let plain_len = match postcard::to_slice(p.as_slice(), body) {
         Ok(s) => s.len(),
         Err(_) => return Err(SendError::Serialize),
     };
@@ -284,14 +295,15 @@ pub async fn write_packet(
     let nonce = Nonce::from(nonce_bytes);
 
     // шифрование in-place (InOutBuf поверх среза), tag отдельно
+    let plain_end = LEN_PREFIX + plain_len;
     let tag = cipher
-        .encrypt_inout_detached(&nonce, b"", (&mut body_buf[4..4 + plain_len]).into())
+        .encrypt_inout_detached(&nonce, b"", (&mut body_buf[LEN_PREFIX..plain_end]).into())
         .unwrap();
-    body_buf[4 + plain_len..4 + plain_len + TAG_LEN].copy_from_slice(&tag);
+    body_buf[plain_end..plain_end + TAG_LEN].copy_from_slice(&tag);
 
     let payload_len = plain_len + TAG_LEN;
-    body_buf[..4].copy_from_slice(&(payload_len as u32).to_be_bytes());
+    body_buf[..LEN_PREFIX].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
-    let total_len = 4 + payload_len;
+    let total_len = LEN_PREFIX + payload_len;
     socket.write(&body_buf[..total_len]).await.map_err(SendError::Tcp)
 }

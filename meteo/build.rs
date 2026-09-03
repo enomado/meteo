@@ -1,15 +1,14 @@
-#[allow(unused_imports)]
+use std::path::PathBuf;
 use std::{
     env,
     fs,
-    net::{
-        IpAddr,
-        Ipv4Addr,
-    },
-    path::PathBuf,
 };
 
-use crate::build_helpers::secret_literal;
+use crate::build_helpers::{
+    ipv4_literal,
+    parse_config,
+    secret_literal,
+};
 
 mod build_helpers;
 
@@ -19,12 +18,12 @@ fn main() {
     // println!("cargo:rustc-link-arg=-Tlinkall.x");
     // println!("cargo:rustc-link-arg=-Tdefmt.x");
 
-    let cargo_toml = fs::read_to_string("config.toml").unwrap();
+    let config_src = fs::read_to_string("config.toml")
+        .expect("config.toml not found — copy config.toml.template and fill it in");
 
-    let fw = build_helpers::parse_config(&cargo_toml);
+    let fw = parse_config(&config_src);
 
-    // let ip_literal = ip_literal(fw.server_ip);
-    let server_ip_literal = build_helpers::ipv4_literal(fw.server_ip);
+    let server_ip_literal = ipv4_literal(fw.server_ip);
 
     let secret_bytes_literal = secret_literal(&fw.secret_key);
 
