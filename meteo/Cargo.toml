@@ -15,8 +15,7 @@ static_cell = { version = "2.1.1", features = [] }
 bmp390-rs = { version = "0.4.0" }
 libscd = { version = "0.5.1", default-features = false, features = ["async", "scd4x", "scd41"] }
 
-# Пин 0.8: фича portable-atomic нужна на riscv32imc (нет native CAS); esp-radio
-# тянет heapless 0.9 отдельной копией — наши heapless-типы наружу не уходят.
+# Фича portable-atomic нужна на riscv32imc (нет native CAS).
 heapless = { version = "0.9", features = ["portable-atomic"] }
 portable-atomic = { version = "1.15.0" }
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
@@ -47,7 +46,9 @@ embedded-io-async = { version = "0.7.0", features = [
 ] }
 
 
-defmt = { version = "0.3.100", features = [] }
+# 1.x — та же линия, что тянет esp-hal; 0.3.100 в графе остаётся только как
+# compat-шим для чужих крейтов (embedded-io 0.6, embassy-net-driver).
+defmt = { version = "1.1.1", features = [] }
 defmt-rtt = { version = "1.3.0", features = [] }
 
 
@@ -167,7 +168,7 @@ smoltcp = { version = "0.14.0", default-features = false, features = [
 
 
 [build-dependencies]
-toml = "1.1.4+spec-1.1.0"
+toml = "1.1.5"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
 # - synced to upstream/main `df161e61` (2026-06-16, esp-radio 0.18.0 → 1.0.0-beta.0)
