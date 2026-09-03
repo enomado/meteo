@@ -1,30 +1,40 @@
 #![no_std]
 #![no_main]
 
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-use esp_hal::rtc_cntl::Rtc;
-use esp_hal::{clock::CpuClock, rng::Rng, timer::timg::TimerGroup};
-
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
-use embassy_time::{Duration, Timer};
-
-use esp_println::println;
-
-use esp_backtrace as _;
-
+use embassy_time::{
+    Duration,
+    Timer,
+};
 use esp_alloc as _;
-
-use esp_radio::wifi::{Config, ControllerConfig, PowerSaveMode, sta::StationConfig};
+use esp_backtrace as _;
+use esp_hal::clock::CpuClock;
+use esp_hal::interrupt::software::SoftwareInterruptControl;
+use esp_hal::rng::Rng;
+use esp_hal::rtc_cntl::Rtc;
+use esp_hal::timer::timg::TimerGroup;
+use esp_println::println;
+use esp_radio::wifi::sta::StationConfig;
+use esp_radio::wifi::{
+    Config,
+    ControllerConfig,
+    PowerSaveMode,
+};
 use esp_rtos as _;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 use meteo::mk_static;
+use meteo::network::{
+    connection,
+    net_task,
+    network_send_loop,
+};
 use meteo::ntp_client::ntp_sync_loop;
-use meteo::{
-    network::{connection, net_task, network_send_loop},
-    sensor::{SensorPeripherals, sensor_loop},
+use meteo::sensor::{
+    SensorPeripherals,
+    sensor_loop,
 };
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
@@ -120,14 +130,14 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(
         sensor_loop(SensorPeripherals {
-            spi2: peripherals.SPI2,
-            spi_clk: peripherals.GPIO7,
+            spi2:     peripherals.SPI2,
+            spi_clk:  peripherals.GPIO7,
             spi_mosi: peripherals.GPIO6,
             spi_miso: peripherals.GPIO9,
-            spi_cs: peripherals.GPIO10,
-            i2c0: peripherals.I2C0,
-            i2c_sda: peripherals.GPIO1,
-            i2c_scl: peripherals.GPIO2,
+            spi_cs:   peripherals.GPIO10,
+            i2c0:     peripherals.I2C0,
+            i2c_sda:  peripherals.GPIO1,
+            i2c_scl:  peripherals.GPIO2,
         })
         .unwrap(),
     );

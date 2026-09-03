@@ -1,18 +1,39 @@
-use embassy_net::{Runner, Stack, tcp::TcpSocket};
-use embassy_time::{Duration, Timer};
-use esp_radio::wifi::{Config, Interface, WifiController, scan::ScanConfig, sta::StationConfig};
-
-use heapless::Vec;
-
-use crate::led::{SYS_NO_TCP, SYS_NO_WIFI, clear_status, set_status};
-use crate::sensor::{SENSOR_QUE, SensorData};
-
 use aes_gcm::aead::AeadInOut;
-use aes_gcm::{Aes128Gcm, KeyInit, Nonce};
-
+use aes_gcm::{
+    Aes128Gcm,
+    KeyInit,
+    Nonce,
+};
+use embassy_net::tcp::TcpSocket;
+use embassy_net::{
+    Runner,
+    Stack,
+};
+use embassy_time::{
+    Duration,
+    Timer,
+};
+use esp_println::println;
+use esp_radio::wifi::scan::ScanConfig;
+use esp_radio::wifi::sta::StationConfig;
+use esp_radio::wifi::{
+    Config,
+    Interface,
+    WifiController,
+};
+use heapless::Vec;
 use postcard;
 
-use esp_println::println;
+use crate::led::{
+    SYS_NO_TCP,
+    SYS_NO_WIFI,
+    clear_status,
+    set_status,
+};
+use crate::sensor::{
+    SENSOR_QUE,
+    SensorData,
+};
 
 // not the real crypto, because of reuse nonce!
 
@@ -49,10 +70,7 @@ async fn pick_network(
 
     let mut best: Option<((&'static str, &'static str), i8)> = None;
     for ap in aps.iter() {
-        let Some(net) = WIFI_NETWORKS
-            .iter()
-            .find(|(ssid, _)| *ssid == ap.ssid.as_str())
-        else {
+        let Some(net) = WIFI_NETWORKS.iter().find(|(ssid, _)| *ssid == ap.ssid.as_str()) else {
             continue;
         };
         if best.is_none_or(|(_, rssi)| ap.signal_strength > rssi) {
@@ -208,10 +226,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                     // Батч не влезает в буфер. При MAX_BATCH недостижимо, но НЕ
                     // паникуем (было: .unwrap() → заморозка чипа). Дропаем батч,
                     // чтобы не застрять в вечном ретрае одного пакета.
-                    println!(
-                        "serialize error: batch too big, dropping {} readings",
-                        p.len()
-                    );
+                    println!("serialize error: batch too big, dropping {} readings", p.len());
                     measurements_buf.clear();
                 }
                 Err(SendError::Tcp(e)) => {
@@ -278,8 +293,5 @@ pub async fn write_packet(
     body_buf[..4].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
     let total_len = 4 + payload_len;
-    socket
-        .write(&body_buf[..total_len])
-        .await
-        .map_err(SendError::Tcp)
+    socket.write(&body_buf[..total_len]).await.map_err(SendError::Tcp)
 }

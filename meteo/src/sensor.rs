@@ -1,25 +1,55 @@
-use bmp390_rs::{Bmp390, ResetPolicy, register::int_status::IntStatus};
-use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
-    mutex::Mutex,
+use bmp390_rs::register::int_status::IntStatus;
+use bmp390_rs::{
+    Bmp390,
+    ResetPolicy,
 };
-use embassy_time::{Delay, Duration, Timer};
-use esp_hal::{
-    gpio::{Level, Output, OutputConfig},
-    i2c::master::{Config as I2cConfig, I2c},
-    peripherals::{GPIO1, GPIO2, GPIO6, GPIO7, GPIO9, GPIO10, I2C0, SPI2},
-    spi::master::Spi,
-    time::Rate,
+use embassy_sync::blocking_mutex::raw::{
+    CriticalSectionRawMutex,
+    NoopRawMutex,
 };
+use embassy_sync::mutex::Mutex;
+use embassy_time::{
+    Delay,
+    Duration,
+    Timer,
+};
+use esp_hal::gpio::{
+    Level,
+    Output,
+    OutputConfig,
+};
+use esp_hal::i2c::master::{
+    Config as I2cConfig,
+    I2c,
+};
+use esp_hal::peripherals::{
+    GPIO1,
+    GPIO2,
+    GPIO6,
+    GPIO7,
+    GPIO9,
+    GPIO10,
+    I2C0,
+    SPI2,
+};
+use esp_hal::spi::master::Spi;
+use esp_hal::time::Rate;
 use esp_println::println;
 use heapless::spsc::Queue;
 use libscd::asynchronous::scd4x::Scd4x;
 
-use crate::{
-    led::{SYS_BUF_OVERFLOW, SYS_NO_PERIPH, clear_status, publish_co2, set_status},
-    ntp_client::{CLOCK_IS_SYNCED_WATCH, get_current_time_epoch},
-    spi_helper::BarometerArgs,
+use crate::led::{
+    SYS_BUF_OVERFLOW,
+    SYS_NO_PERIPH,
+    clear_status,
+    publish_co2,
+    set_status,
 };
+use crate::ntp_client::{
+    CLOCK_IS_SYNCED_WATCH,
+    get_current_time_epoch,
+};
+use crate::spi_helper::BarometerArgs;
 
 pub type BarometerDevice<'a> = Bmp390<
     bmp390_rs::bus::Spi<
@@ -53,10 +83,7 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
 /// Калибровка SCD41 temperature offset по показанию BMP390.
 /// Делает single-shot SCD41, ждёт drdy на барометре, считает дельту и пишет новый offset.
 /// Если барометра нет / он не отдал данные — offset не трогаем.
-async fn calibrate_temp_offset(
-    scd: &mut ScdDevice<'_>,
-    barometer: Option<&mut BarometerDevice<'_>>,
-) {
+async fn calibrate_temp_offset(scd: &mut ScdDevice<'_>, barometer: Option<&mut BarometerDevice<'_>>) {
     if let Err(e) = scd.measure_single_shot().await {
         println!("SCD41 cal: single shot error: {:?}", e);
         return;
@@ -76,18 +103,17 @@ async fn calibrate_temp_offset(
     if let Some(barometer) = barometer {
         for _ in 0..10 {
             match barometer.read::<IntStatus>().await {
-                Ok(status) if status.drdy => match barometer.read_sensor_data().await {
-                    Ok(data) => {
-                        bmp_temp = Some(data.temperature());
-                        break;
+                Ok(status) if status.drdy => {
+                    match barometer.read_sensor_data().await {
+                        Ok(data) => {
+                            bmp_temp = Some(data.temperature());
+                            break;
+                        }
+                        Err(e) => {
+                            println!("SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}", e)
+                        }
                     }
-                    Err(e) => {
-                        println!(
-                            "SCD41 cal: BMP390 read_sensor_data error, retrying: {:?}",
-                            e
-                        )
-                    }
-                },
+                }
                 Ok(_) => {} // не drdy ещё — ждём и ретраим
                 Err(e) => println!("SCD41 cal: BMP390 status read error, retrying: {:?}", e),
             }
@@ -146,28 +172,27 @@ pub async fn get_barometer_spi<'a>(
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BaroReading {
     pub pressure: f32,
-    pub temp: f32,
+    pub temp:     f32,
 }
 
 /// SCD41 одно показание — CO2 (ppm), humidity (%), temperature (°C).
 /// Поля всегда заполнены или отсутствуют синхронно (один read_measurement).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ScdReading {
-    pub co2: u16,
+    pub co2:      u16,
     pub humidity: f32,
-    pub temp: f32,
+    pub temp:     f32,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SensorData {
     pub baro: Option<BaroReading>,
-    pub scd: Option<ScdReading>,
+    pub scd:  Option<ScdReading>,
     /// millis epoch
     pub time: u64,
 }
 
-pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> =
-    Mutex::new(Queue::new());
+pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> = Mutex::new(Queue::new());
 
 async fn enqueue_sensor_data(mdata: SensorData) {
     let mut p = SENSOR_QUE.lock().await;
@@ -185,15 +210,15 @@ async fn enqueue_sensor_data(mdata: SensorData) {
 
 pub struct SensorPeripherals<'a> {
     // SPI (BMP390)
-    pub spi2: SPI2<'a>,
-    pub spi_clk: GPIO7<'a>,
+    pub spi2:     SPI2<'a>,
+    pub spi_clk:  GPIO7<'a>,
     pub spi_mosi: GPIO6<'a>,
     pub spi_miso: GPIO9<'a>,
-    pub spi_cs: GPIO10<'a>,
+    pub spi_cs:   GPIO10<'a>,
     // I2C (SCD41)
-    pub i2c0: I2C0<'a>,
-    pub i2c_sda: GPIO1<'a>,
-    pub i2c_scl: GPIO2<'a>,
+    pub i2c0:     I2C0<'a>,
+    pub i2c_sda:  GPIO1<'a>,
+    pub i2c_scl:  GPIO2<'a>,
 }
 
 #[embassy_executor::task]
@@ -224,14 +249,11 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
     }
 
     // --- init SCD41 ---
-    let i2c = I2c::new(
-        i2c0,
-        I2cConfig::default().with_frequency(Rate::from_khz(100)),
-    )
-    .unwrap()
-    .with_sda(i2c_sda)
-    .with_scl(i2c_scl)
-    .into_async();
+    let i2c = I2c::new(i2c0, I2cConfig::default().with_frequency(Rate::from_khz(100)))
+        .unwrap()
+        .with_sda(i2c_sda)
+        .with_scl(i2c_scl)
+        .into_async();
 
     let mut scd = Scd4x::new(i2c, Delay);
 
@@ -243,10 +265,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
     match serial {
         Ok(s) => println!("SCD41 serial: {:?}", s),
         Err(e) => {
-            println!(
-                "SCD41: failed to read serial: {:?}, sensor not connected?",
-                e
-            );
+            println!("SCD41: failed to read serial: {:?}, sensor not connected?", e);
             set_status(SYS_NO_PERIPH);
             return;
         }
@@ -281,19 +300,21 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         let mut baro: Option<BaroReading> = None;
         if let Some(ref mut barometer) = barometer {
             match barometer.read::<IntStatus>().await {
-                Ok(status) if status.drdy => match barometer.read_sensor_data().await {
-                    Ok(data) => {
-                        let pressure = data.pressure();
-                        let temp = data.temperature();
-                        last_pressure_hpa = Some((pressure / 100.0) as u16);
-                        println!("BMP390: P={:.1} T={:.2}", pressure, temp);
-                        baro = Some(BaroReading { pressure, temp });
+                Ok(status) if status.drdy => {
+                    match barometer.read_sensor_data().await {
+                        Ok(data) => {
+                            let pressure = data.pressure();
+                            let temp = data.temperature();
+                            last_pressure_hpa = Some((pressure / 100.0) as u16);
+                            println!("BMP390: P={:.1} T={:.2}", pressure, temp);
+                            baro = Some(BaroReading { pressure, temp });
+                        }
+                        Err(e) => {
+                            println!("BMP390: read_sensor_data error: {:?}", e);
+                            set_status(SYS_NO_PERIPH);
+                        }
                     }
-                    Err(e) => {
-                        println!("BMP390: read_sensor_data error: {:?}", e);
-                        set_status(SYS_NO_PERIPH);
-                    }
-                },
+                }
                 Ok(_) => {} // не drdy — штатно, ждём следующий цикл
                 Err(e) => {
                     println!("BMP390: status read error: {:?}", e);
@@ -322,18 +343,15 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         let mut scd_reading: Option<ScdReading> = None;
         match scd.read_measurement().await {
             Ok(m) => {
-                println!(
-                    "SCD41: CO2={} T={:.2} H={:.2}",
-                    m.co2, m.temperature, m.humidity
-                );
+                println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
                 // если barometer был None при init — бит остаётся
                 if barometer.is_some() {
                     clear_status(SYS_NO_PERIPH);
                 }
                 scd_reading = Some(ScdReading {
-                    co2: m.co2,
+                    co2:      m.co2,
                     humidity: m.humidity,
-                    temp: m.temperature,
+                    temp:     m.temperature,
                 });
             }
             Err(e) => {

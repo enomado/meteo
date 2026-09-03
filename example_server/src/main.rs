@@ -28,12 +28,26 @@
 //! transport security.
 
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes128Gcm, KeyInit, Nonce};
+use aes_gcm::{
+    Aes128Gcm,
+    KeyInit,
+    Nonce,
+};
 use anyhow::Context;
-use chrono::{Local, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{
+    Local,
+    TimeZone,
+    Utc,
+};
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{
+    TcpListener,
+    TcpStream,
+};
 
 /// 16-byte AES-128 key shared with the firmware. This is the demo value
 /// (`config.toml` `secret_key = "73757065..."` == ASCII "supersecretkey!1").
@@ -49,15 +63,15 @@ const MAX_PACKET: usize = 4 * 1024;
 #[derive(Debug, Serialize, Deserialize)]
 struct BaroReading {
     pressure: f32,
-    temp: f32,
+    temp:     f32,
 }
 
 /// SCD41 reading — CO2 (ppm), humidity (%), temperature (°C).
 #[derive(Debug, Serialize, Deserialize)]
 struct ScdReading {
-    co2: u16,
+    co2:      u16,
     humidity: f32,
-    temp: f32,
+    temp:     f32,
 }
 
 /// One measurement. `baro`/`scd` are independent (a sensor may be missing or
@@ -69,15 +83,12 @@ struct ScdReading {
 #[derive(Debug, Serialize, Deserialize)]
 struct SensorData {
     baro: Option<BaroReading>,
-    scd: Option<ScdReading>,
+    scd:  Option<ScdReading>,
     time: u64,
 }
 
 /// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded packet.
-async fn read_packet(
-    socket: &mut TcpStream,
-    nonce_counter: u64,
-) -> anyhow::Result<Vec<SensorData>> {
+async fn read_packet(socket: &mut TcpStream, nonce_counter: u64) -> anyhow::Result<Vec<SensorData>> {
     // 1) length prefix
     let mut len_buf = [0u8; 4];
     socket.read_exact(&mut len_buf).await?;
@@ -101,8 +112,7 @@ async fn read_packet(
         .context("AES-GCM decrypt failed (wrong key or out-of-sync nonce?)")?;
 
     // 4) decode
-    let data: Vec<SensorData> =
-        postcard::from_bytes(&plaintext).context("postcard decode failed")?;
+    let data: Vec<SensorData> = postcard::from_bytes(&plaintext).context("postcard decode failed")?;
     Ok(data)
 }
 
@@ -144,10 +154,7 @@ async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
             }
         };
 
-        println!(
-            "[{addr}] packet #{nonce_counter}: {} reading(s)",
-            packet.len()
-        );
+        println!("[{addr}] packet #{nonce_counter}: {} reading(s)", packet.len());
         print_readings(&addr, &packet);
 
         // >>> Plug your backend here: write `packet` to a DB, a queue, a file,

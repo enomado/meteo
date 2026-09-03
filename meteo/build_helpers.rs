@@ -1,7 +1,11 @@
 #[allow(unused_imports)]
 use std::{
-    env, fs,
-    net::{IpAddr, Ipv4Addr},
+    env,
+    fs,
+    net::{
+        IpAddr,
+        Ipv4Addr,
+    },
     path::PathBuf,
 };
 
@@ -30,9 +34,9 @@ pub struct FirmwareConfig {
     /// Сети в порядке из конфига: [0] — основная, [1] — опциональная wifi2.
     /// Прошивка выбирает из них по силе сигнала (скан), см. `network::connection`.
     pub wifi_networks: Vec<(String, String)>,
-    pub server_ip: Ipv4Addr,
-    pub server_port: u16,
-    pub secret_key: [u8; 16],
+    pub server_ip:     Ipv4Addr,
+    pub server_port:   u16,
+    pub secret_key:    [u8; 16],
 }
 
 use toml::Value;
@@ -42,10 +46,7 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     let fw = &doc["firmware"];
 
     let wifi_ssid = fw["wifi_ssid"].as_str().expect("no wifi_ssid").to_string();
-    let wifi_passwd = fw["wifi_passwd"]
-        .as_str()
-        .expect("no wifi_passwd")
-        .to_string();
+    let wifi_passwd = fw["wifi_passwd"].as_str().expect("no wifi_passwd").to_string();
 
     let mut wifi_networks = vec![(wifi_ssid, wifi_passwd)];
 

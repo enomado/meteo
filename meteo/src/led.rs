@@ -1,15 +1,29 @@
-use portable_atomic::{AtomicU8, AtomicU16, Ordering};
-
-use embassy_time::{Duration, Timer};
+use embassy_time::{
+    Duration,
+    Timer,
+};
 use esp_hal::gpio::DriveMode;
 use esp_hal::gpio::interconnect::PeripheralOutput;
+use esp_hal::ledc::channel::{
+    self,
+    ChannelIFace,
+};
+use esp_hal::ledc::timer::{
+    self,
+    TimerIFace,
+};
 use esp_hal::ledc::{
-    self, LSGlobalClkSource, LowSpeed,
-    channel::{self, ChannelIFace},
-    timer::{self, TimerIFace},
+    self,
+    LSGlobalClkSource,
+    LowSpeed,
 };
 use esp_hal::peripherals::LEDC;
 use esp_hal::time::Rate;
+use portable_atomic::{
+    AtomicU8,
+    AtomicU16,
+    Ordering,
+};
 
 // --- System status bits (bit_idx+1 = число миганий) ---
 pub const SYS_BUF_OVERFLOW: u8 = 1 << 0; // 1× — буфер переполнен
@@ -73,9 +87,9 @@ pub fn publish_co2(co2: u16) {
 }
 
 pub struct RgbLed<'a> {
-    r: channel::Channel<'a, LowSpeed>,
-    g: channel::Channel<'a, LowSpeed>,
-    b: channel::Channel<'a, LowSpeed>,
+    r:     channel::Channel<'a, LowSpeed>,
+    g:     channel::Channel<'a, LowSpeed>,
+    b:     channel::Channel<'a, LowSpeed>,
     cur_r: u8,
     cur_g: u8,
     cur_b: u8,
@@ -95,9 +109,9 @@ pub fn init_rgb_led(
     let mut timer0 = ledc_inst.timer::<LowSpeed>(timer::Number::Timer0);
     timer0
         .configure(timer::config::Config {
-            duty: timer::config::Duty::Duty8Bit,
+            duty:         timer::config::Duty::Duty8Bit,
             clock_source: timer::LSClockSource::APBClk,
-            frequency: Rate::from_hz(5000),
+            frequency:    Rate::from_hz(5000),
         })
         .unwrap();
     let timer0 = crate::mk_static!(timer::Timer<'static, LowSpeed>, timer0);
@@ -248,22 +262,30 @@ struct PulseSpec {
 fn pulse_params(co2: u16) -> Option<PulseSpec> {
     match co2 {
         0..=999 => None,
-        1000..=1399 => Some(PulseSpec {
-            period_ms: 4000,
-            depth_pct: 35,
-        }),
-        1400..=1999 => Some(PulseSpec {
-            period_ms: 2200,
-            depth_pct: 55,
-        }),
-        2000..=2999 => Some(PulseSpec {
-            period_ms: 1400,
-            depth_pct: 75,
-        }),
-        _ => Some(PulseSpec {
-            period_ms: 900,
-            depth_pct: 90,
-        }),
+        1000..=1399 => {
+            Some(PulseSpec {
+                period_ms: 4000,
+                depth_pct: 35,
+            })
+        }
+        1400..=1999 => {
+            Some(PulseSpec {
+                period_ms: 2200,
+                depth_pct: 55,
+            })
+        }
+        2000..=2999 => {
+            Some(PulseSpec {
+                period_ms: 1400,
+                depth_pct: 75,
+            })
+        }
+        _ => {
+            Some(PulseSpec {
+                period_ms: 900,
+                depth_pct: 90,
+            })
+        }
     }
 }
 

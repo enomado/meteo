@@ -1,21 +1,31 @@
+use core::net::{
+    IpAddr,
+    SocketAddr,
+};
+
+use embassy_net::Stack;
 use embassy_net::dns::DnsQueryType;
-use sntpc::{NtpContext, NtpResult, get_time};
+use embassy_net::udp::{
+    PacketMetadata,
+    UdpSocket,
+};
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::watch::Watch;
+use embassy_time::{
+    Duration,
+    Instant,
+    Timer,
+    with_timeout,
+};
+use esp_println::println;
+use sntpc::{
+    NtpContext,
+    NtpResult,
+    get_time,
+};
 use sntpc_net_embassy::UdpSocketWrapper;
 use sntpc_time_embassy::EmbassyTimestampGenerator;
-
-use core::net::{IpAddr, SocketAddr};
-
-use embassy_net::{
-    Stack,
-    udp::{PacketMetadata, UdpSocket},
-};
-use embassy_sync::{
-    blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
-    watch::Watch,
-};
-use embassy_time::{Duration, Instant, Timer, with_timeout};
-
-use esp_println::println;
 
 const NTP_SERVER: &str = "pool.ntp.org";
 const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
@@ -40,13 +50,7 @@ pub async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     let mut tx_meta = [PacketMetadata::EMPTY; 16];
     let mut tx_buffer = [0; 4096];
 
-    let mut socket = UdpSocket::new(
-        stack,
-        &mut rx_meta,
-        &mut rx_buffer,
-        &mut tx_meta,
-        &mut tx_buffer,
-    );
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
     socket.bind(123).ok()?;
 
     let context = NtpContext::new(EmbassyTimestampGenerator::default());

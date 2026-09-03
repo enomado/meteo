@@ -20,12 +20,22 @@
 //! retry-циклы продолжают бить heartbeat, и мы НЕ ресетимся. Heartbeat = признак
 //! жизни таски, а не успеха передачи.
 
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{
+    Duration,
+    Instant,
+    Timer,
+};
 use esp_hal::ram;
-use esp_hal::rtc_cntl::{Rwdt, RwdtStage};
+use esp_hal::rtc_cntl::{
+    Rwdt,
+    RwdtStage,
+};
 use esp_hal::time::Duration as HalDuration;
 use esp_println::println;
-use portable_atomic::{AtomicU32, Ordering};
+use portable_atomic::{
+    AtomicU32,
+    Ordering,
+};
 
 /// Счётчик итераций `sensor_loop`. Бампается раз в ~30с в норме.
 pub static SENSOR_HB: AtomicU32 = AtomicU32::new(0);

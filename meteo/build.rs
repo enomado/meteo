@@ -1,7 +1,11 @@
 #[allow(unused_imports)]
 use std::{
-    env, fs,
-    net::{IpAddr, Ipv4Addr},
+    env,
+    fs,
+    net::{
+        IpAddr,
+        Ipv4Addr,
+    },
     path::PathBuf,
 };
 
@@ -54,12 +58,7 @@ pub static SECRET_KEY: [u8; 16] = [{secret}];
 
     println!("cargo:warning==== Firmware build parameters ===");
     for (i, (ssid, passwd)) in fw.wifi_networks.iter().enumerate() {
-        println!(
-            "cargo:warning=WiFi #{}        : {} / {}",
-            i + 1,
-            ssid,
-            passwd
-        );
+        println!("cargo:warning=WiFi #{}        : {} / {}", i + 1, ssid, passwd);
     }
     println!("cargo:warning=Server IP     : {}", fw.server_ip);
     println!("cargo:warning=Server PORT   : {}", fw.server_port);
@@ -77,37 +76,39 @@ fn linker_be_nice() {
         let what = &args[2];
 
         match kind.as_str() {
-            "undefined-symbol" => match what.as_str() {
-                "_defmt_timestamp" => {
-                    eprintln!();
-                    eprintln!(
-                        "💡 `defmt` not found - make sure `defmt.x` is added as a linker script and you have included `use defmt_rtt as _;`"
-                    );
-                    eprintln!();
+            "undefined-symbol" => {
+                match what.as_str() {
+                    "_defmt_timestamp" => {
+                        eprintln!();
+                        eprintln!(
+                            "💡 `defmt` not found - make sure `defmt.x` is added as a linker script and you have included `use defmt_rtt as _;`"
+                        );
+                        eprintln!();
+                    }
+                    "_stack_start" => {
+                        eprintln!();
+                        eprintln!("💡 Is the linker script `linkall.x` missing?");
+                        eprintln!();
+                    }
+                    "esp_wifi_preempt_enable"
+                    | "esp_wifi_preempt_yield_task"
+                    | "esp_wifi_preempt_task_create" => {
+                        eprintln!();
+                        eprintln!(
+                            "💡 `esp-wifi` has no scheduler enabled. Make sure you have the `builtin-scheduler` feature enabled, or that you provide an external scheduler."
+                        );
+                        eprintln!();
+                    }
+                    "embedded_test_linker_file_not_added_to_rustflags" => {
+                        eprintln!();
+                        eprintln!(
+                            "💡 `embedded-test` not found - make sure `embedded-test.x` is added as a linker script for tests"
+                        );
+                        eprintln!();
+                    }
+                    _ => (),
                 }
-                "_stack_start" => {
-                    eprintln!();
-                    eprintln!("💡 Is the linker script `linkall.x` missing?");
-                    eprintln!();
-                }
-                "esp_wifi_preempt_enable"
-                | "esp_wifi_preempt_yield_task"
-                | "esp_wifi_preempt_task_create" => {
-                    eprintln!();
-                    eprintln!(
-                        "💡 `esp-wifi` has no scheduler enabled. Make sure you have the `builtin-scheduler` feature enabled, or that you provide an external scheduler."
-                    );
-                    eprintln!();
-                }
-                "embedded_test_linker_file_not_added_to_rustflags" => {
-                    eprintln!();
-                    eprintln!(
-                        "💡 `embedded-test` not found - make sure `embedded-test.x` is added as a linker script for tests"
-                    );
-                    eprintln!();
-                }
-                _ => (),
-            },
+            }
             // we don't have anything helpful for "missing-lib" yet
             _ => {
                 std::process::exit(1);
