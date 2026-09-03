@@ -171,8 +171,9 @@ smoltcp = { version = "0.14.0", default-features = false, features = [
 toml = "1.1.5"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
-# - synced to upstream/main `df161e61` (2026-06-16, esp-radio 0.18.0 → 1.0.0-beta.0)
-#   on esp-hal branch `tmp/upstream-main-20260616`; prev sync `2294099a` (2026-05-22)
+# - synced to upstream/main `c9240a08` (2026-09-03, esp-hal 1.1.0 → 1.2.0,
+#   esp-rtos 0.3.0 → 0.4.0) on esp-hal branch `tmp/upstream-main-20260903`;
+#   prev sync `df161e61` (2026-06-16), до неё `2294099a` (2026-05-22)
 # - kept as path patch for fast local hacks; PHY fix from prev fork is now in upstream
 [patch."https://github.com/esp-rs/esp-hal"]
 esp-hal = { path = "/home/sc/t/embed/esp-hal/esp-hal" }

@@ -17,6 +17,7 @@ use esp_println::println;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{
+    AuthenticationMethodConfig,
     Config,
     Interface,
     WifiController,
@@ -88,6 +89,23 @@ async fn pick_network(
     }
 }
 
+/// Конфиг станции для пары (ssid, пароль) из `WIFI_NETWORKS`.
+///
+/// `Wpa2Personal` — ровно то, что esp-radio ставил по умолчанию, пока пароль и
+/// метод аутентификации были отдельными полями `StationConfig`.
+/// Длины SSID/пароля проверяет build-скрипт (`build_helpers::check_network`),
+/// поэтому конверсия здесь не может упасть: паника на буте свалила бы плату в
+/// бесконечный цикл reset'ов.
+pub fn station_config(ssid: &str, passwd: &str) -> Config {
+    Config::Station(
+        StationConfig::default()
+            .with_ssid(ssid.try_into().expect("SSID length checked at build time"))
+            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+                passwd.try_into().expect("password length checked at build time"),
+            )),
+    )
+}
+
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
@@ -98,12 +116,7 @@ pub async fn connection(mut controller: WifiController<'static>) {
         let (ssid, passwd) = pick_network(&mut controller, attempt).await;
         attempt = attempt.wrapping_add(1);
 
-        let station_config = Config::Station(
-            StationConfig::default()
-                .with_ssid(ssid)
-                .with_password(passwd.into()),
-        );
-        if let Err(e) = controller.set_config(&station_config) {
+        if let Err(e) = controller.set_config(&station_config(ssid, passwd)) {
             // Смена конфига не удалась — не фатально: коннектимся с тем, что уже
             // стоит в контроллере (в худшем случае это основная сеть).
             println!("set_config({}) failed: {:?}", ssid, e);

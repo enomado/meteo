@@ -11,6 +11,25 @@ pub struct FirmwareConfig {
     pub secret_key:    [u8; 16],
 }
 
+/// Пределы esp-radio: `Ssid` держит 32 байта, `Password` — 64. Проверяем на
+/// сборке, чтобы прошивка не падала на `try_into()` уже на устройстве: паника на
+/// буте = бесконечный цикл reset'ов (см. `crate::watchdog` в прошивке).
+const SSID_MAX_BYTES: usize = 32;
+const PASSWD_MAX_BYTES: usize = 64;
+
+fn check_network(ssid: &str, passwd: &str) {
+    assert!(
+        ssid.len() <= SSID_MAX_BYTES,
+        "SSID {ssid:?} is {} bytes, esp-radio allows {SSID_MAX_BYTES}",
+        ssid.len()
+    );
+    assert!(
+        passwd.len() <= PASSWD_MAX_BYTES,
+        "password for SSID {ssid:?} is {} bytes, esp-radio allows {PASSWD_MAX_BYTES}",
+        passwd.len()
+    );
+}
+
 pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     let doc: Value = toml::from_str(toml_str).expect("invalid TOML");
     let fw = &doc["firmware"];
@@ -40,6 +59,10 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
 
     let secret_key_hex = fw["secret_key"].as_str().expect("no secret_key");
     let secret_key = hex_to_u8_16(secret_key_hex);
+
+    for (ssid, passwd) in &wifi_networks {
+        check_network(ssid, passwd);
+    }
 
     FirmwareConfig {
         wifi_networks,

@@ -10,14 +10,11 @@ use embassy_time::{
 use esp_alloc as _;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
-use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::rng::Rng;
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
-use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{
-    Config,
     ControllerConfig,
     PowerSaveMode,
 };
@@ -37,6 +34,7 @@ use meteo::network::{
     connection,
     net_task,
     network_send_loop,
+    station_config,
 };
 use meteo::ntp_client::ntp_sync_loop;
 use meteo::sensor::{
@@ -83,13 +81,14 @@ async fn main(spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    let software_interrupt = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
-    esp_rtos::start(timg0.timer0, software_interrupt.software_interrupt0);
+    // esp-hal 1.2: софт-прерывания раздаются отдельными периферийными
+    // синглтонами, SoftwareInterruptControl больше нет.
+    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     // RWDT-watchdog: ловит настоящие зависания (await, который не резолвится),
     // паники ловит custom_halt. Спавним после esp_rtos::start (как остальные
     // таски); feeder держит boot-grace сам (не ресетит пока таски не оживут).
-    let rtc = Rtc::new(peripherals.LPWR);
+    let rtc = Rtc::new(peripherals.RTC_TIMER);
     spawner.spawn(watchdog_loop(rtc.rwdt).unwrap());
 
     let rng = Rng::new();
@@ -97,15 +96,10 @@ async fn main(spawner: Spawner) -> ! {
     // Стартовая конфигурация — основная сеть. Если сетей в конфиге несколько,
     // `connection` перед каждым коннектом сам переставит её на самую сильную по RSSI.
     let (ssid, passwd) = WIFI_NETWORKS[0];
-    let station_config = Config::Station(
-        StationConfig::default()
-            .with_ssid(ssid)
-            .with_password(passwd.into()),
-    );
 
     let mut controller = esp_radio::wifi::WifiController::new(
         peripherals.WIFI,
-        ControllerConfig::default().with_initial_config(station_config),
+        ControllerConfig::default().with_initial_config(station_config(ssid, passwd)),
     )
     .unwrap();
 
