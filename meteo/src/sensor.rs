@@ -41,6 +41,7 @@ use libscd::asynchronous::scd4x::Scd4x;
 use crate::led::{
     SYS_BUF_OVERFLOW,
     SYS_NO_PERIPH,
+    clear_co2,
     clear_status,
     publish_co2,
     set_status,
@@ -77,6 +78,33 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
                 println!("SCD41: data_ready error: {:?}", e);
                 return false;
             }
+        }
+    }
+}
+
+/// Один замер SCD41: single-shot → ожидание data_ready → чтение.
+/// `None` — замер в этом цикле не удался (причина уже в логе); вызывающий
+/// гасит CO2 на LED и поднимает `SYS_NO_PERIPH`.
+async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdReading> {
+    if let Err(e) = scd.measure_single_shot().await {
+        println!("SCD41: single shot error: {:?}", e);
+        return None;
+    }
+
+    wait_scd_ready(scd).await;
+
+    match scd.read_measurement().await {
+        Ok(m) => {
+            println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
+            Some(ScdReading {
+                co2:      m.co2,
+                humidity: m.humidity,
+                temp:     m.temperature,
+            })
+        }
+        Err(e) => {
+            println!("SCD41: read error: {:?}", e);
+            None
         }
     }
 }
@@ -323,8 +351,9 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
 
         // 1) читаем BMP390 если готов. Ошибку шины НЕ паникуем (было: .unwrap()
         // → reset всего чипа на транзиенте SPI): пропускаем давление в этом
-        // цикле, ставим SYS_NO_PERIPH — как для SCD41 ниже.
+        // цикле, сбой учитываем в SYS_NO_PERIPH в конце итерации.
         let mut baro: Option<BaroReading> = None;
+        let mut baro_failed = false;
         if let Some(ref mut barometer) = barometer {
             match poll_barometer(barometer).await {
                 BaroPoll::Ready(reading) => {
@@ -333,7 +362,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
                     baro = Some(reading);
                 }
                 BaroPoll::NotReady => {} // не drdy — штатно, ждём следующий цикл
-                BaroPoll::Failed => set_status(SYS_NO_PERIPH),
+                BaroPoll::Failed => baro_failed = true,
             }
         }
 
@@ -342,45 +371,27 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
             let _ = scd.set_ambient_pressure(p_hpa).await;
         }
 
-        // 3) запускаем single-shot SCD41
-        if let Err(e) = scd.measure_single_shot().await {
-            println!("SCD41: single shot error: {:?}", e);
+        // 3) single-shot SCD41 → data_ready → чтение
+        let scd_reading = measure_scd(&mut scd).await;
+
+        // 4) CO2 для LED-таска — ВСЕГДА, даже без сети и без NTP-времени. Сбой
+        // SCD41 гасит показание: старое значение на LED выдавало бы мёртвый
+        // сенсор за живой.
+        match &scd_reading {
+            Some(s) => publish_co2(s.co2),
+            None => clear_co2(),
+        }
+
+        // 5) SYS_NO_PERIPH — ОДИН писатель, одно вычисление на итерацию. Раньше
+        // сбой BMP390 ставил бит, а успешное чтение SCD41 в той же итерации его
+        // снимало ⇒ сбой барометра на LED не был виден никогда.
+        if barometer.is_none() || baro_failed || scd_reading.is_none() {
             set_status(SYS_NO_PERIPH);
-            Timer::after(Duration::from_secs(30)).await;
-            continue;
+        } else {
+            clear_status(SYS_NO_PERIPH);
         }
 
-        // 4) ждём data_ready от SCD41
-        wait_scd_ready(&mut scd).await;
-
-        // 5) читаем SCD41
-        let mut scd_reading: Option<ScdReading> = None;
-        match scd.read_measurement().await {
-            Ok(m) => {
-                println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
-                // если barometer был None при init — бит остаётся
-                if barometer.is_some() {
-                    clear_status(SYS_NO_PERIPH);
-                }
-                scd_reading = Some(ScdReading {
-                    co2:      m.co2,
-                    humidity: m.humidity,
-                    temp:     m.temperature,
-                });
-            }
-            Err(e) => {
-                println!("SCD41: read error: {:?}", e);
-                set_status(SYS_NO_PERIPH);
-            }
-        }
-
-        // 6) публикуем CO2 для LED-таска — ВСЕГДА, даже без сети и без NTP-времени.
-        let co2_for_led = scd_reading.as_ref().map(|s| s.co2);
-        if let Some(c) = co2_for_led {
-            publish_co2(c);
-        }
-
-        // 7) в серверный буфер кладём только с доверенным временем (после первого
+        // 6) в серверный буфер кладём только с доверенным временем (после первого
         // NTP-синка). try_get неблокирующий; once-synced остаётся Some(true) и при
         // последующих кратких обрывах WiFi — буферизация продолжается. Холодный
         // старт без WiFi → не засоряем очередь baked-in таймстампами.
@@ -393,7 +404,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
             enqueue_sensor_data(mdata).await;
         }
 
-        // 8) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
+        // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
         Timer::after(Duration::from_secs(25)).await;
     }
 }

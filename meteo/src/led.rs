@@ -38,9 +38,10 @@ pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset
 
 pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 
-/// Сентинел «CO2 ещё не измерялся»: атомик не умеет хранить `Option`, поэтому
-/// отсутствие кодируем значением. Наружу отдаём честный `Option` — см.
-/// [`latest_co2`], сравнений с `u16::MAX` в логике быть не должно.
+/// Сентинел «свежего CO2 нет» (ещё не измерялся или последний цикл SCD41
+/// сбойный): атомик не умеет хранить `Option`, поэтому отсутствие кодируем
+/// значением. Наружу отдаём честный `Option` — см. [`latest_co2`], сравнений с
+/// `u16::MAX` в логике быть не должно.
 const NO_CO2: u16 = u16::MAX;
 
 static LATEST_CO2: AtomicU16 = AtomicU16::new(NO_CO2);
@@ -159,7 +160,14 @@ pub fn publish_co2(co2: u16) {
     LATEST_CO2.store(co2, Ordering::Relaxed);
 }
 
-/// Последнее измерение CO2, `None` — сенсор ещё ничего не отдал.
+/// Показание CO2 протухло: SCD41 не отдал измерение в этом цикле. LED уходит в
+/// blink-only, пока сенсор не оживёт. Отдельный канал, а не `SYS_NO_PERIPH`:
+/// тот бит поднимает и сбой барометра, при котором CO2 остаётся живым.
+pub fn clear_co2() {
+    LATEST_CO2.store(NO_CO2, Ordering::Relaxed);
+}
+
+/// Последнее измерение CO2, `None` — свежего показания нет.
 pub fn latest_co2() -> Option<u16> {
     match LATEST_CO2.load(Ordering::Relaxed) {
         NO_CO2 => None,
@@ -390,7 +398,7 @@ async fn play_co2_step(led: &mut RgbLed<'_>, co2: u16) -> u32 {
 /// - boot: startup_test (R→G→B→W→off, ~2с, async)
 /// - есть CO2-данные → CO2 mode (цвет + breathing). Раз в `OVERLAY_INTERVAL_MS`
 ///   поверх вставляется blink-overlay для всех активных ошибок.
-/// - нет CO2-данных (сенсор не пришёл / SYS_NO_PERIPH) → blink-only
+/// - нет свежего CO2 (SCD41 не пришёл / сбойнул в последнем цикле) → blink-only
 #[embassy_executor::task]
 pub async fn led_loop(mut led: RgbLed<'static>) {
     led.startup_test().await;
@@ -399,8 +407,7 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
 
     loop {
         let status = SYSTEM_STATUS.load(Ordering::Relaxed);
-        // При SYS_NO_PERIPH последнее показание считаем протухшим: сенсор отвалился.
-        let Some(co2) = latest_co2().filter(|_| status & SYS_NO_PERIPH == 0) else {
+        let Some(co2) = latest_co2() else {
             // CO2-канал нечем заполнять: играем blink активных бит
             // (или просто ждём, если ошибок нет и мы ждём первое чтение).
             led.fade_to(Rgb::OFF, 200);
