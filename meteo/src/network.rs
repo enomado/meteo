@@ -201,7 +201,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 
     // Радио включено с момента подключения ⇒ RNG истинно случайный (ESP32-C3
     // TRM, Random Number Generator). Две загрузки совпадут по BootId (и тогда
-    // повторят nonce) с вероятностью 2⁻³² на пару — принято в плане, этап 3.1.
+    // повторят nonce) с вероятностью 2⁻³² на пару — принятый риск протокола v2.
     let boot = BootId(Rng::new().random());
     println!("net: boot id {:08x}", boot.0);
     // Ключ постоянный ⇒ key schedule AES разворачиваем один раз на таску.

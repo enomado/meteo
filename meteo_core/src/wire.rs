@@ -95,7 +95,8 @@ impl PacketCounter {
 
     /// 4 нулевых байта + 8 байт BE-счётчика. ВНИМАНИЕ: счётчик обнуляется на
     /// каждом соединении ⇒ пара (ключ, nonce) повторяется на разных данных.
-    /// Известная дыра, лечение — docs/PLAN_hardening.md, этап 3.
+    /// Известная дыра; протокол v2 (`datagram`) её закрывает: nonce из
+    /// `BootId` и `Seq`, растущего на каждую датаграмму.
     fn nonce(self) -> Nonce<Aes128Gcm> {
         let mut bytes = [0u8; 12];
         bytes[4..].copy_from_slice(&self.0.to_be_bytes());

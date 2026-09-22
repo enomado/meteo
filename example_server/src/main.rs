@@ -35,7 +35,7 @@
 //! `[ u32 BE payload_len ][ AES-128-GCM ciphertext || tag ]` per packet,
 //! postcard-encoded `SensorData` batch, nonce from a per-connection counter
 //! (repeats on every reconnect — not transport security). Kept until old
-//! firmware is gone (`docs/PLAN_hardening.md`, stage 3.7 step 4).
+//! firmware is gone.
 
 use std::net::SocketAddr;
 use std::time::Instant;
