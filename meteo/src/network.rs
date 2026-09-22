@@ -4,14 +4,20 @@ use aes_gcm::{
     KeyInit,
     Nonce,
 };
-use embassy_net::tcp::TcpSocket;
+use embassy_net::tcp::{
+    Error as TcpError,
+    State,
+    TcpSocket,
+};
 use embassy_net::{
     Runner,
     Stack,
 };
 use embassy_time::{
     Duration,
+    TimeoutError,
     Timer,
+    with_timeout,
 };
 use embedded_io_async::Write;
 use esp_println::println;
@@ -220,8 +226,8 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         let mut nonce_counter = 0u64;
 
         loop {
-            // heartbeat для watchdog (внутренний цикл: send). ≤3с при данных,
-            // ≤1с при пустой очереди.
+            // heartbeat для watchdog (внутренний цикл: send). ≤3с при данных
+            // (+ до SEND_TIMEOUT на ожидание ACK), ≤1с при пустой очереди.
             crate::watchdog::beat_net();
 
             if measurements_buf.is_empty() {
@@ -251,7 +257,15 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                     measurements_buf.clear();
                 }
                 Err(SendError::Tcp(e)) => {
+                    // Батч НЕ чистим: без ACK неизвестно, дошёл ли он. Повтор на
+                    // новом соединении безопасен — приёмник идемпотентен по времени.
                     println!("write error: {:?}", e);
+                    set_status(SYS_NO_TCP);
+                    Timer::after(Duration::from_millis(3000)).await;
+                    break;
+                }
+                Err(SendError::Timeout) => {
+                    println!("send timeout: no ACK in {}s", SEND_TIMEOUT.as_secs());
                     set_status(SYS_NO_TCP);
                     Timer::after(Duration::from_millis(3000)).await;
                     break;
@@ -272,8 +286,35 @@ enum SendError {
     /// postcard не влез в фикс-буфер (батч слишком большой). При MAX_BATCH
     /// недостижимо; пришло на смену `.unwrap()`, который морозил чип.
     Serialize,
-    /// Ошибка записи в сокет — рвём и реконнектимся.
+    /// Ошибка записи в сокет или соединение закрылось до ACK — рвём и
+    /// реконнектимся.
     Tcp(embassy_net::tcp::Error),
+    /// Пакет не записан/не подтверждён за `SEND_TIMEOUT` — рвём и реконнектимся.
+    Timeout,
+}
+
+/// Предел на запись пакета и ожидание ACK. Ожидание в `write_all`/`flush`
+/// ограничено только socket-timeout'ом (120с, сбрасывается любым входящим
+/// сегментом), и в сумме с соседними ожиданиями могло перерасти
+/// `NET_STALL_LIMIT` (180с) ⇒ ресет всего чипа вместо реконнекта.
+const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Пишет пакет целиком и ждёт, пока удалённый TCP подтвердит все байты.
+///
+/// `write` кладёт в tx-буфер сколько влезло и возвращает это число: при
+/// медленных ACK хвост пакета терялся, приёмник терял фрейминг потока —
+/// поэтому `write_all`. Успех записи = байты в tx-буфере, не у приёмника —
+/// поэтому `flush`. Но `flush` embassy-net 0.9 отдаёт `Ok` и когда сокет ушёл
+/// в `Closed` (RST/таймаут) с недоставленными данными: его условие ожидания —
+/// `send_queue() > 0 && state() != Closed`. Доставку подтверждает только живое
+/// состояние после `flush`.
+async fn deliver(socket: &mut TcpSocket<'_>, packet: &[u8]) -> Result<(), SendError> {
+    socket.write_all(packet).await.map_err(SendError::Tcp)?;
+    socket.flush().await.map_err(SendError::Tcp)?;
+    if socket.state() == State::Closed {
+        return Err(SendError::Tcp(TcpError::ConnectionReset));
+    }
+    Ok(())
 }
 
 /// On-wire layout: `[u32 BE payload_len][AES-GCM ciphertext][16-byte tag]`
@@ -318,13 +359,10 @@ async fn write_packet(
     body_buf[..LEN_PREFIX].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
     let total_len = LEN_PREFIX + payload_len;
-    // `write` кладёт в tx-буфер сколько влезло и возвращает это число: при
-    // медленных ACK хвост пакета терялся, приёмник терял фрейминг потока.
-    // `write_all` дописывает пакет целиком или возвращает ошибку.
-    socket
-        .write_all(&body_buf[..total_len])
-        .await
-        .map_err(SendError::Tcp)?;
-    println!("write ok, {} bytes", total_len);
+    match with_timeout(SEND_TIMEOUT, deliver(socket, &body_buf[..total_len])).await {
+        Ok(delivered) => delivered?,
+        Err(TimeoutError) => return Err(SendError::Timeout),
+    }
+    println!("delivered, {} bytes", total_len);
     Ok(())
 }

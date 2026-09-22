@@ -169,8 +169,9 @@ extern "Rust" fn custom_halt() -> ! {
 /// зависшей. sensor: период ~30с (25с сон + ~5с SCD) → 90с = 3× запас.
 const SENSOR_STALL_LIMIT: Duration = Duration::from_secs(90);
 /// network: цикл крутится ≤5с (send 3с / retry 5с), НО `socket.connect()` может
-/// висеть до socket-timeout (120с) при недоступном сервере — это легитимно, не
-/// зависание. Поэтому лимит > 120с с запасом.
+/// висеть до socket-timeout (120с) при недоступном сервере, а отправка пакета —
+/// до `SEND_TIMEOUT` (60с) в ожидании ACK — это легитимно, не зависание.
+/// Поэтому лимит > 120с с запасом.
 const NET_STALL_LIMIT: Duration = Duration::from_secs(180);
 
 /// Как часто проверяем liveness и кормим RWDT.
