@@ -71,7 +71,9 @@ async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     let mut tx_buffer = [0; 4096];
 
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
-    socket.bind(123).ok()?;
+    // Порт 0 ⇒ embassy-net выдаёт динамический. Исходящий порт 123 режут
+    // некоторые провайдеры, а серверу он не нужен: ответ идёт на порт запроса.
+    socket.bind(0).ok()?;
 
     let context = NtpContext::new(EmbassyTimestampGenerator::default());
 
