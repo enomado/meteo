@@ -51,6 +51,20 @@ espflash flash --monitor --chip esp32c3
 espflash flash --monitor --chip esp32c3 --port /dev/ttyUSB0 target/riscv32imc-unknown-none-elf/release/meteo
 ```
 
+## Tests
+
+This crate builds only for riscv. Hardware-independent logic — wire format,
+LED palette, watchdog decision, WiFi choice, the packet sender state machine —
+lives in [`../meteo_core`](../meteo_core) and is tested on the host:
+
+```sh
+cd ../meteo_core && cargo test --release
+```
+
+The sender test is a deterministic simulation (fixed-seed proptest) of partial
+writes, connection drops and outages; it checks that no reading is lost
+without being counted as evicted from a full queue.
+
 ## SPI Pinout (BMP390)
 
 | ESP32-C3 | Signal | Pin    |
