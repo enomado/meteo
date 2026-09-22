@@ -66,10 +66,15 @@ pub type BarometerDevice<'a> = Bmp390<
 
 pub type ScdDevice<'a> = Scd4x<I2c<'a, esp_hal::Async>, Delay>;
 
-/// Поллит `data_ready` раз в секунду до Ok(true).
-/// Возвращает `false`, если поллинг был прерван ошибкой шины.
+/// Предел опросов `data_ready` (раз в секунду). Single-shot SCD41 длится 5с по
+/// даташиту, ×2 запас. Без предела датчик, вечно отвечающий «не готов», вешал
+/// sensor-таску ⇒ через `SENSOR_STALL_LIMIT` watchdog ресетил весь чип.
+const SCD_READY_POLLS: u32 = 10;
+
+/// Поллит `data_ready` раз в секунду до Ok(true), не дольше `SCD_READY_POLLS`.
+/// Возвращает `false`, если поллинг прерван ошибкой шины или исчерпан предел.
 async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
-    loop {
+    for _ in 0..SCD_READY_POLLS {
         Timer::after(Duration::from_secs(1)).await;
         match scd.data_ready().await {
             Ok(true) => return true,
@@ -80,6 +85,8 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
             }
         }
     }
+    println!("SCD41: data not ready after {} polls", SCD_READY_POLLS);
+    false
 }
 
 /// Один замер SCD41: single-shot → ожидание data_ready → чтение.
@@ -91,7 +98,9 @@ async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdReading> {
         return None;
     }
 
-    wait_scd_ready(scd).await;
+    if !wait_scd_ready(scd).await {
+        return None;
+    }
 
     match scd.read_measurement().await {
         Ok(m) => {
