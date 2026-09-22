@@ -35,8 +35,11 @@ use esp_hal::peripherals::{
 use esp_hal::spi::master::Spi;
 use esp_hal::time::Rate;
 use esp_println::println;
-use heapless::spsc::Queue;
 use libscd::asynchronous::scd4x::Scd4x;
+use meteo_core::backlog::{
+    SensorQueue,
+    push_evicting,
+};
 use meteo_core::wire::{
     BaroReading,
     ScdReading,
@@ -242,21 +245,15 @@ pub async fn get_barometer_spi<'a>(
     }
 }
 
-/// Очередь показаний к отправке. heapless `Queue<_, N>` вмещает N−1 элемент ⇒
-/// 59 показаний ≈ 30 мин при цикле ~30с; дальше вытесняются самые старые.
-pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> = Mutex::new(Queue::new());
+/// Очередь показаний к отправке (ёмкость и вытеснение — `meteo_core::backlog`).
+pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, SensorQueue> = Mutex::new(SensorQueue::new());
 
 async fn enqueue_sensor_data(mdata: SensorData) {
-    let mut p = SENSOR_QUE.lock().await;
-    match p.enqueue(mdata) {
-        Ok(_) => {
-            clear_status(SYS_BUF_OVERFLOW);
-        }
-        Err(el) => {
-            // Очередь полна ⇒ в ней есть хотя бы один элемент, и после dequeue
-            // ровно одно место свободно: оба вызова не могут не сработать.
-            p.dequeue().expect("full queue has at least one entry");
-            p.enqueue(el).expect("dequeue freed exactly one slot");
+    let mut queue = SENSOR_QUE.lock().await;
+    match push_evicting(&mut queue, mdata) {
+        None => clear_status(SYS_BUF_OVERFLOW),
+        Some(evicted) => {
+            println!("queue full: dropped reading at {}", evicted.time.0);
             set_status(SYS_BUF_OVERFLOW);
         }
     }

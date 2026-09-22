@@ -1,9 +1,10 @@
+use core::net::Ipv4Addr;
+
 use aes_gcm::{
     Aes128Gcm,
     KeyInit,
 };
 use embassy_net::tcp::{
-    Error as TcpError,
     State,
     TcpSocket,
 };
@@ -17,7 +18,6 @@ use embassy_time::{
     Timer,
     with_timeout,
 };
-use embedded_io_async::Write;
 use esp_println::println;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
@@ -27,17 +27,16 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
+use meteo_core::sender::{
+    Action,
+    Event,
+    Sender,
+};
 use meteo_core::wifi_pick::{
     Network,
     Rssi,
     round_robin,
     strongest,
-};
-use meteo_core::wire::{
-    PacketBuf,
-    PacketCounter,
-    SensorBatch,
-    encode_packet,
 };
 
 use crate::led::{
@@ -145,24 +144,24 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 
-async fn get_sensor_data_chunk() -> SensorBatch {
-    let mut out = SensorBatch::new();
-    let Ok(mut p) = SENSOR_QUE.try_lock() else {
-        return out;
-    };
+/// socket-timeout: соединение без входящих сегментов дольше — мёртвое. Он же
+/// ограничивает `connect` к недоступному серверу.
+const TCP_TIMEOUT: Duration = Duration::from_secs(120);
 
-    // НЕ пихаем весь backlog в один пакет: он не влез бы в буфер (ёмкость
-    // батча = `MAX_BATCH`). Дренаж backlog'а — за несколько пакетов.
-    while !out.is_full() {
-        let Some(v) = p.dequeue() else {
-            break;
-        };
-        out.push(v).expect("loop runs only while the batch has room");
-    }
+/// Предел на одну операцию отправки: запись порции пакета или ожидание ACK.
+/// Без него ожидание ограничено только socket-timeout'ом (120с, сбрасывается
+/// любым входящим сегментом) и могло перерасти `NET_STALL_LIMIT` (180с) ⇒
+/// ресет всего чипа вместо реконнекта.
+const SEND_TIMEOUT: Duration = Duration::from_secs(60);
 
-    out
-}
+/// Сколько ждём ухода RST после `abort`, прежде чем переиспользовать сокет.
+/// Без сети RST не уйдёт никогда — поэтому предел; `connect` всё равно
+/// начинает с чистого сокета.
+const ABORT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Драйвер `meteo_core::sender::Sender`: исполняет его действия на TCP-сокете
+/// и возвращает итог. Логика доставки (дописывание пакета, чистка батча только
+/// после ACK, повтор после обрыва) — в автомате, с DST-тестом на хосте.
 #[embassy_executor::task]
 pub async fn network_send_loop(stack: Stack<'static>) {
     let mut rx_buffer = [0; 1024];
@@ -171,135 +170,106 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     stack.wait_link_up().await;
     stack.wait_config_up().await;
 
-    // 188.245.58.248
-    // let remote_endpoint = (Ipv4Addr::new(188, 245, 58, 248), 1234);
     let remote_endpoint = (SERVER_IP, SERVER_PORT);
 
-    let mut measurements_buf = SensorBatch::new();
+    // Один сокет на всю жизнь таски: после обрыва он `abort`-ится и снова
+    // уходит в `connect` (тот сбрасывает состояние, таймаут сохраняется).
+    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+    socket.set_timeout(Some(TCP_TIMEOUT));
 
     // Ключ постоянный ⇒ key schedule AES разворачиваем один раз на таску, а не
-    // на каждый пакет. `new` от массива фиксированной длины упасть не может
-    // (было: `new_from_slice(..).unwrap()` на каждом пакете).
-    let cipher = Aes128Gcm::new(&SECRET_KEY.into());
+    // на каждый пакет. `new` от массива фиксированной длины упасть не может.
+    let mut sender = Sender::new(Aes128Gcm::new(&SECRET_KEY.into()));
+    let mut outcome = perform(&mut socket, remote_endpoint, sender.start()).await;
 
     loop {
-        // heartbeat для watchdog (внешний цикл: реконнект). Бьётся даже когда
-        // сервер недоступен — retry ≤5с, что watchdog'ом НЕ считается зависанием.
+        // heartbeat для watchdog: одно действие на итерацию, каждое ограничено
+        // по времени (connect — TCP_TIMEOUT, запись/ACK — SEND_TIMEOUT, сон ≤5с).
+        // Бьётся и при лежащем сервере: retry — не зависание.
         crate::watchdog::beat_net();
 
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(120)));
-
-        println!("connecting...");
-        let r = socket.connect(remote_endpoint).await;
-        if let Err(e) = r {
-            println!("connect error: {:?}", e);
-            set_status(SYS_NO_TCP);
-            Timer::after(Duration::from_millis(5000)).await;
-            continue;
+        if outcome == Event::Flushed {
+            println!("delivered {} readings", sender.in_flight());
         }
+        let action = {
+            // Замок только на время шага автомата — не через await'ы сокета,
+            // иначе sensor-таска ждала бы его на enqueue.
+            let mut queue = SENSOR_QUE.lock().await;
+            sender.step(outcome, &mut queue)
+        };
+        outcome = perform(&mut socket, remote_endpoint, action).await;
+    }
+}
 
-        println!("connected!");
-        clear_status(SYS_NO_TCP);
-
-        // Счётчик пакетов (из него nonce) живёт внутри соединения: сервер
-        // считает пакеты с 1 на каждый accept, поэтому обнуляем на реконнекте.
-        let mut counter = PacketCounter::FIRST;
-
-        loop {
-            // heartbeat для watchdog (внутренний цикл: send). ≤3с при данных
-            // (+ до SEND_TIMEOUT на ожидание ACK), ≤1с при пустой очереди.
-            crate::watchdog::beat_net();
-
-            if measurements_buf.is_empty() {
-                measurements_buf = get_sensor_data_chunk().await
-            }
-
-            let p = &measurements_buf;
-
-            if p.is_empty() {
-                Timer::after(Duration::from_millis(1000)).await;
-                continue;
-            }
-
-            println!("sending {} measurements, packet #{}", p.len(), counter.0);
-            let r = write_packet(&mut socket, &cipher, p, counter).await;
-            counter = counter.next();
-
-            match r {
+/// Исполнить действие автомата и вернуть его итог.
+async fn perform(socket: &mut TcpSocket<'_>, endpoint: (Ipv4Addr, u16), action: Action<'_>) -> Event {
+    match action {
+        Action::Connect => {
+            println!("connecting...");
+            match socket.connect(endpoint).await {
                 Ok(()) => {
-                    measurements_buf.clear();
+                    println!("connected!");
+                    clear_status(SYS_NO_TCP);
+                    Event::Connected
                 }
-                Err(SendError::Tcp(e)) => {
-                    // Батч НЕ чистим: без ACK неизвестно, дошёл ли он. Повтор на
-                    // новом соединении безопасен — приёмник идемпотентен по времени.
-                    println!("write error: {:?}", e);
-                    set_status(SYS_NO_TCP);
-                    Timer::after(Duration::from_millis(3000)).await;
-                    break;
-                }
-                Err(SendError::Timeout) => {
-                    println!("send timeout: no ACK in {}s", SEND_TIMEOUT.as_secs());
-                    set_status(SYS_NO_TCP);
-                    Timer::after(Duration::from_millis(3000)).await;
-                    break;
+                Err(e) => {
+                    println!("connect error: {:?}", e);
+                    drop_connection(socket).await
                 }
             }
-
-            Timer::after(Duration::from_millis(3000)).await;
         }
-
-        Timer::after(Duration::from_millis(3000)).await;
+        // `write` берёт сколько влезло в tx-буфер; остаток автомат пришлёт
+        // следующим `Write`.
+        Action::Write(bytes) => {
+            match with_timeout(SEND_TIMEOUT, socket.write(bytes)).await {
+                Ok(Ok(n)) => Event::Written(n),
+                Ok(Err(e)) => {
+                    println!("write error: {:?}", e);
+                    drop_connection(socket).await
+                }
+                Err(TimeoutError) => {
+                    println!("write timeout ({}s)", SEND_TIMEOUT.as_secs());
+                    drop_connection(socket).await
+                }
+            }
+        }
+        Action::Flush => {
+            match with_timeout(SEND_TIMEOUT, socket.flush()).await {
+                // `flush` embassy-net 0.9 отдаёт `Ok` и когда сокет ушёл в
+                // `Closed` (RST/таймаут) с недоставленными данными: его условие
+                // ожидания — `send_queue() > 0 && state() != Closed`. Доставку
+                // подтверждает только живое состояние после него.
+                Ok(Ok(())) if socket.state() != State::Closed => Event::Flushed,
+                Ok(Ok(())) => {
+                    println!("connection closed before ACK");
+                    drop_connection(socket).await
+                }
+                Ok(Err(e)) => {
+                    println!("flush error: {:?}", e);
+                    drop_connection(socket).await
+                }
+                Err(TimeoutError) => {
+                    println!("send timeout: no ACK in {}s", SEND_TIMEOUT.as_secs());
+                    drop_connection(socket).await
+                }
+            }
+        }
+        Action::Sleep(pause) => {
+            Timer::after(Duration::from_millis(pause.as_millis() as u64)).await;
+            Event::Woke
+        }
     }
 }
 
-/// Ошибка отправки пакета — любая ведёт к реконнекту. Переполнения буфера
-/// среди причин нет: его исключает проверка бюджета пакета при компиляции.
-enum SendError {
-    /// Ошибка записи в сокет или соединение закрылось до ACK — рвём и
-    /// реконнектимся.
-    Tcp(embassy_net::tcp::Error),
-    /// Пакет не записан/не подтверждён за `SEND_TIMEOUT` — рвём и реконнектимся.
-    Timeout,
-}
-
-/// Предел на запись пакета и ожидание ACK. Ожидание в `write_all`/`flush`
-/// ограничено только socket-timeout'ом (120с, сбрасывается любым входящим
-/// сегментом), и в сумме с соседними ожиданиями могло перерасти
-/// `NET_STALL_LIMIT` (180с) ⇒ ресет всего чипа вместо реконнекта.
-const SEND_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Пишет пакет целиком и ждёт, пока удалённый TCP подтвердит все байты.
-///
-/// `write` кладёт в tx-буфер сколько влезло и возвращает это число: при
-/// медленных ACK хвост пакета терялся, приёмник терял фрейминг потока —
-/// поэтому `write_all`. Успех записи = байты в tx-буфере, не у приёмника —
-/// поэтому `flush`. Но `flush` embassy-net 0.9 отдаёт `Ok` и когда сокет ушёл
-/// в `Closed` (RST/таймаут) с недоставленными данными: его условие ожидания —
-/// `send_queue() > 0 && state() != Closed`. Доставку подтверждает только живое
-/// состояние после `flush`.
-async fn deliver(socket: &mut TcpSocket<'_>, packet: &[u8]) -> Result<(), SendError> {
-    socket.write_all(packet).await.map_err(SendError::Tcp)?;
-    socket.flush().await.map_err(SendError::Tcp)?;
-    if socket.state() == State::Closed {
-        return Err(SendError::Tcp(TcpError::ConnectionReset));
+/// Закрыть соединение после ошибки: сокет готов к новому `connect`.
+async fn drop_connection(socket: &mut TcpSocket<'_>) -> Event {
+    set_status(SYS_NO_TCP);
+    socket.abort();
+    if with_timeout(ABORT_FLUSH_TIMEOUT, socket.flush()).await.is_err() {
+        println!(
+            "RST not sent in {}s, reusing socket anyway",
+            ABORT_FLUSH_TIMEOUT.as_secs()
+        );
     }
-    Ok(())
-}
-
-/// Кодирует батч (формат — `meteo_core::wire`) и доставляет его.
-async fn write_packet(
-    socket: &mut TcpSocket<'_>,
-    cipher: &Aes128Gcm,
-    p: &SensorBatch,
-    counter: PacketCounter,
-) -> Result<(), SendError> {
-    let mut packet: PacketBuf = [0u8; _];
-    let total_len = encode_packet(cipher, counter, p, &mut packet);
-    match with_timeout(SEND_TIMEOUT, deliver(socket, &packet[..total_len])).await {
-        Ok(delivered) => delivered?,
-        Err(TimeoutError) => return Err(SendError::Timeout),
-    }
-    println!("delivered, {} bytes", total_len);
-    Ok(())
+    Event::Failed
 }
