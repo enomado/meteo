@@ -42,10 +42,10 @@ use meteo::sensor::{
     sensor_loop,
 };
 use meteo::watchdog::{
-    BootFault,
     take_boot_fault,
     watchdog_loop,
 };
+use meteo_core::supervisor::BootFault;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 

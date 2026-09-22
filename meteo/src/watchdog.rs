@@ -15,10 +15,7 @@
 //!    которые паникой НЕ являются, поэтому `custom_halt` их не видит. Кормится
 //!    только пока критичные таски (sensor + network) реально крутят свои циклы.
 //!
-//! Семантика watchdog: ресетим когда КОД ТАСКИ перестал исполняться, а НЕ когда
-//! внешняя сеть лежит. Обрыв WiFi/сервера на часы — это НЕ вина устройства:
-//! retry-циклы продолжают бить heartbeat, и мы НЕ ресетимся. Heartbeat = признак
-//! жизни таски, а не успеха передачи.
+//! Семантика и лимиты надзора — `meteo_core::supervisor` (там же тесты).
 
 use embassy_time::{
     Duration,
@@ -33,6 +30,15 @@ use esp_hal::rtc_cntl::{
 };
 use esp_hal::time::Duration as HalDuration;
 use esp_println::println;
+use meteo_core::supervisor::{
+    BootFault,
+    Heartbeat,
+    ResetKind,
+    Supervisor,
+    Uptime,
+    Verdict,
+    classify,
+};
 use portable_atomic::{
     AtomicU32,
     Ordering,
@@ -78,18 +84,6 @@ const FAULT_MAGIC: u32 = 0x6D74_0002;
 /// Значение `RTC_PANIC_MARK`, записанное `custom_halt` перед reset.
 const PANIC_MARK: u32 = 1;
 
-/// Причина, по которой чип перезагрузился. `match` на буте обязан быть
-/// исчерпывающим, иначе новый вариант тихо уедет в «clean start».
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BootFault {
-    /// Штатный старт: подача питания, кнопка reset, прошивка, чистая перезагрузка.
-    Clean,
-    /// Reset вызван паникой (`custom_halt`).
-    Panic,
-    /// Reset вызван RTC watchdog'ом (таска или весь executor встал).
-    WdtStall,
-}
-
 /// Итог определения причины boot'а.
 pub struct BootReport {
     pub fault:                 BootFault,
@@ -107,18 +101,30 @@ static RTC_PANIC_MARK: AtomicU32 = AtomicU32::new(0);
 #[ram(unstable(rtc_fast, persistent))]
 static RTC_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Причина boot'а по регистру reset reason и маркеру паники.
-///
-/// Незнакомые причины (`SysSuperWdt`, brownout, glitch, недокументированный
-/// код) — `Clean`: отдельный вариант заводим, когда увидим такую в поле; сырое
-/// значение печатает бут-лог.
-fn classify(reason: Option<SocResetReason>, panic_marked: bool) -> BootFault {
+/// Сводит причину reset ESP32-C3 к классу, по которому решает `classify`.
+/// `match` исчерпывающий: новая причина в esp-hal не соберётся молча.
+fn reset_kind(reason: Option<SocResetReason>) -> ResetKind {
+    let Some(reason) = reason else {
+        return ResetKind::Other;
+    };
     match reason {
-        Some(SocResetReason::SysRtcWdt | SocResetReason::CoreRtcWdt | SocResetReason::Cpu0RtcWdt) => {
-            BootFault::WdtStall
+        SocResetReason::ChipPowerOn => ResetKind::PowerOn,
+        SocResetReason::SysRtcWdt | SocResetReason::CoreRtcWdt | SocResetReason::Cpu0RtcWdt => {
+            ResetKind::RtcWatchdog
         }
-        Some(SocResetReason::CoreSw | SocResetReason::Cpu0Sw) if panic_marked => BootFault::Panic,
-        _ => BootFault::Clean,
+        SocResetReason::CoreSw | SocResetReason::Cpu0Sw => ResetKind::Software,
+        SocResetReason::CoreDeepSleep
+        | SocResetReason::CoreMwdt0
+        | SocResetReason::CoreMwdt1
+        | SocResetReason::Cpu0Mwdt0
+        | SocResetReason::Cpu0Mwdt1
+        | SocResetReason::SysBrownOut
+        | SocResetReason::SysSuperWdt
+        | SocResetReason::SysClkGlitch
+        | SocResetReason::CoreEfuseCrc
+        | SocResetReason::CoreUsbUart
+        | SocResetReason::CoreUsbJtag
+        | SocResetReason::CorePwrGlitch => ResetKind::Other,
     }
 }
 
@@ -131,9 +137,9 @@ fn classify(reason: Option<SocResetReason>, panic_marked: bool) -> BootFault {
 /// может стереть RTC-область, тогда счёт начнётся с этого сбоя.
 pub fn take_boot_fault() -> BootReport {
     let reset_reason = esp_hal::system::reset_reason();
+    let kind = reset_kind(reset_reason);
 
-    let area_valid =
-        RTC_MAGIC.load(Ordering::Relaxed) == FAULT_MAGIC && reset_reason != Some(SocResetReason::ChipPowerOn);
+    let area_valid = RTC_MAGIC.load(Ordering::Relaxed) == FAULT_MAGIC && kind != ResetKind::PowerOn;
     if !area_valid {
         RTC_MAGIC.store(FAULT_MAGIC, Ordering::Relaxed);
         RTC_PANIC_MARK.store(0, Ordering::Relaxed);
@@ -143,7 +149,7 @@ pub fn take_boot_fault() -> BootReport {
     let panic_marked = RTC_PANIC_MARK.load(Ordering::Relaxed) == PANIC_MARK;
     RTC_PANIC_MARK.store(0, Ordering::Relaxed);
 
-    let fault = classify(reset_reason, panic_marked);
+    let fault = classify(kind, panic_marked);
     if fault != BootFault::Clean {
         RTC_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
     }
@@ -167,15 +173,6 @@ extern "Rust" fn custom_halt() -> ! {
     esp_hal::system::software_reset()
 }
 
-/// Максимальный НОРМАЛЬНЫЙ простой heartbeat'а, после которого таска считается
-/// зависшей. sensor: период ~30с (25с сон + ~5с SCD) → 90с = 3× запас.
-const SENSOR_STALL_LIMIT: Duration = Duration::from_secs(90);
-/// network: цикл крутится ≤5с (send 3с / retry 5с), НО `socket.connect()` может
-/// висеть до socket-timeout (120с) при недоступном сервере, а отправка пакета —
-/// до `SEND_TIMEOUT` (60с) в ожидании ACK — это легитимно, не зависание.
-/// Поэтому лимит > 120с с запасом.
-const NET_STALL_LIMIT: Duration = Duration::from_secs(180);
-
 /// Как часто проверяем liveness и кормим RWDT.
 const FEED_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -185,8 +182,19 @@ const FEED_INTERVAL: Duration = Duration::from_secs(10);
 /// железо ресетит в пределах 120с.
 const RWDT_TIMEOUT_SECS: u64 = 120;
 
-/// Супервизор. Кормит RWDT пока обе таски живы; при зависании перестаёт кормить
-/// → железо ресетит чип. Паники ловятся отдельно (`custom_halt`), сюда не
+fn uptime() -> Uptime {
+    Uptime(core::time::Duration::from_micros(Instant::now().as_micros()))
+}
+
+fn heartbeats() -> (Heartbeat, Heartbeat) {
+    (
+        Heartbeat(SENSOR_HB.load(Ordering::Relaxed)),
+        Heartbeat(NET_HB.load(Ordering::Relaxed)),
+    )
+}
+
+/// Кормит RWDT по вердикту `Supervisor` (лимиты, boot-grace, оживление — там
+/// же, с тестами на хосте). Паники ловятся отдельно (`custom_halt`), сюда не
 /// доходят.
 #[embassy_executor::task]
 pub async fn watchdog_loop(mut rwdt: Rwdt) {
@@ -194,48 +202,23 @@ pub async fn watchdog_loop(mut rwdt: Rwdt) {
     rwdt.enable();
     println!("watchdog: RWDT armed, hw timeout {}s", RWDT_TIMEOUT_SECS);
 
-    let now = Instant::now();
-    let mut sensor_seen = SENSOR_HB.load(Ordering::Relaxed);
-    let mut net_seen = NET_HB.load(Ordering::Relaxed);
-    let mut sensor_last_change = now;
-    let mut net_last_change = now;
-
-    // Per-task arming: пока таска не отметилась первый раз, её лимит НЕ
-    // enforcing (boot/калибровка BMP390+SCD41 может занять ~минуту — не ловим
-    // это как зависание). Как только пробила первый heartbeat — включаем надзор.
-    let mut sensor_armed = false;
-    let mut net_armed = false;
+    let (sensor, net) = heartbeats();
+    let mut supervisor = Supervisor::new(uptime(), sensor, net);
 
     loop {
         Timer::after(FEED_INTERVAL).await;
-        let now = Instant::now();
 
-        let s = SENSOR_HB.load(Ordering::Relaxed);
-        if s != sensor_seen {
-            sensor_seen = s;
-            sensor_last_change = now;
-            sensor_armed = true;
-        }
-        let n = NET_HB.load(Ordering::Relaxed);
-        if n != net_seen {
-            net_seen = n;
-            net_last_change = now;
-            net_armed = true;
-        }
-
-        // Таска ОК если ещё не armed (boot-grace) ИЛИ heartbeat свежий.
-        let sensor_ok = !sensor_armed || (now - sensor_last_change) < SENSOR_STALL_LIMIT;
-        let net_ok = !net_armed || (now - net_last_change) < NET_STALL_LIMIT;
-
-        if sensor_ok && net_ok {
-            rwdt.feed();
-        } else {
-            // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет уйти.
-            // Причину следующий бут прочитает из регистра reset reason.
-            println!(
-                "watchdog: STALL sensor_ok={} net_ok={} → withholding feed, reset imminent",
-                sensor_ok, net_ok
-            );
+        let (sensor, net) = heartbeats();
+        match supervisor.tick(uptime(), sensor, net) {
+            Verdict::Feed => rwdt.feed(),
+            Verdict::Withhold { sensor_ok, net_ok } => {
+                // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет
+                // уйти. Причину следующий бут прочитает из регистра reset reason.
+                println!(
+                    "watchdog: STALL sensor_ok={} net_ok={} → withholding feed, reset imminent",
+                    sensor_ok, net_ok
+                );
+            }
         }
     }
 }
