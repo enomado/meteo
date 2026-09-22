@@ -210,6 +210,11 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 
     let mut measurements_buf = SensorBatch::new();
 
+    // Ключ постоянный ⇒ key schedule AES разворачиваем один раз на таску, а не
+    // на каждый пакет. `new` от массива фиксированной длины упасть не может
+    // (было: `new_from_slice(..).unwrap()` на каждом пакете).
+    let cipher = Aes128Gcm::new(&SECRET_KEY.into());
+
     loop {
         // heartbeat для watchdog (внешний цикл: реконнект). Бьётся даже когда
         // сервер недоступен — retry ≤5с, что watchdog'ом НЕ считается зависанием.
@@ -252,7 +257,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 
             nonce_counter += 1;
             println!("sending {} measurements, nonce={}", p.len(), nonce_counter);
-            let r = write_packet(&mut socket, p, nonce_counter).await;
+            let r = write_packet(&mut socket, &cipher, p, nonce_counter).await;
 
             match r {
                 Ok(()) => {
@@ -320,6 +325,7 @@ async fn deliver(socket: &mut TcpSocket<'_>, packet: &[u8]) -> Result<(), SendEr
 /// Шифруем in-place в `body_buf[4..]`, tag дописываем сразу после — без heap-Vec.
 async fn write_packet(
     socket: &mut TcpSocket<'_>,
+    cipher: &Aes128Gcm,
     p: &SensorBatch,
     nonce_counter: u64,
 ) -> Result<(), SendError> {
@@ -331,10 +337,10 @@ async fn write_packet(
         .expect("packet budget checked at compile time")
         .len();
 
-    let cipher = Aes128Gcm::new_from_slice(&SECRET_KEY).unwrap();
-
-    // nonce = 96 бит: 4 байта паддинга + 8 байт BE-counter. ВНИМАНИЕ: reuse при
-    // рестарте MCU (counter сбрасывается) — это известная (намеренная) дыра.
+    // nonce = 96 бит: 4 байта паддинга + 8 байт BE-counter. ВНИМАНИЕ: счётчик
+    // обнуляется на КАЖДОМ TCP-реконнекте (не только при рестарте MCU) ⇒ пара
+    // (ключ, nonce) повторяется на разных данных. Известная дыра, лечение —
+    // соль на соединение: docs/PLAN_hardening.md, этап 3.
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
     let nonce = Nonce::from(nonce_bytes);
@@ -343,7 +349,7 @@ async fn write_packet(
     let plain_end = LEN_PREFIX + plain_len;
     let tag = cipher
         .encrypt_inout_detached(&nonce, b"", (&mut body_buf[LEN_PREFIX..plain_end]).into())
-        .unwrap();
+        .expect("plaintext is under BUF_LEN, far below the AES-GCM length limit");
     body_buf[plain_end..plain_end + TAG_LEN].copy_from_slice(&tag);
 
     let payload_len = plain_len + TAG_LEN;
