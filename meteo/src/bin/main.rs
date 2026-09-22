@@ -81,9 +81,9 @@ async fn main(spawner: Spawner) -> ! {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
 
-    // esp-hal 1.2: софт-прерывания раздаются отдельными периферийными
-    // синглтонами, SoftwareInterruptControl больше нет.
-    esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+    // esp-hal upstream #6221: софт-прерывание планировщика esp-hal резервирует
+    // под RTOS сам (FROM_CPU_INTR0 из Peripherals убран), start берёт только таймер.
+    esp_rtos::start(timg0.timer0);
 
     // RWDT-watchdog: ловит настоящие зависания (await, который не резолвится),
     // паники ловит custom_halt. Спавним после esp_rtos::start (как остальные
