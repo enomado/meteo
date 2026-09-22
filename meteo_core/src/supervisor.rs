@@ -20,10 +20,9 @@ pub struct Heartbeat(pub u32);
 /// сон + ≤10с ожидания SCD41) → 90с = 3× запас.
 pub const SENSOR_STALL_LIMIT: Duration = Duration::from_secs(90);
 
-/// network: цикл крутится ≤5с (send 3с / retry 5с), НО `socket.connect()` может
-/// висеть до socket-timeout (120с) при недоступном сервере, а отправка пакета —
-/// до `SEND_TIMEOUT` (60с) в ожидании ACK — это легитимно, не зависание.
-/// Поэтому лимит > 120с с запасом.
+/// network: итерация цикла ≤ 5с сна + отправка датаграммы ≤ `SEND_TIMEOUT`
+/// (5с). Лимит остался от TCP-отправителя (connect висел до 120с): снижать
+/// его — отдельное решение, запас не мешает.
 pub const NET_STALL_LIMIT: Duration = Duration::from_secs(180);
 
 /// Надзор за одной таской.

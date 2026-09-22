@@ -1,23 +1,25 @@
-use core::net::Ipv4Addr;
-
 use aes_gcm::{
     Aes128Gcm,
     KeyInit,
 };
-use embassy_net::tcp::{
-    State,
-    TcpSocket,
+use embassy_net::udp::{
+    PacketMetadata,
+    UdpSocket,
 };
 use embassy_net::{
+    IpEndpoint,
     Runner,
     Stack,
 };
 use embassy_time::{
     Duration,
+    Instant,
     TimeoutError,
     Timer,
+    with_deadline,
     with_timeout,
 };
+use esp_hal::rng::Rng;
 use esp_println::println;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
@@ -27,9 +29,10 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
+use meteo_core::datagram::BootId;
 use meteo_core::sender::{
-    Action,
-    Event,
+    Backlog,
+    Mode,
     Sender,
 };
 use meteo_core::wifi_pick::{
@@ -38,14 +41,24 @@ use meteo_core::wifi_pick::{
     round_robin,
     strongest,
 };
+use portable_atomic::{
+    AtomicU32,
+    Ordering,
+};
+use static_cell::ConstStaticCell;
 
 use crate::led::{
-    SYS_NO_TCP,
+    SYS_BUF_OVERFLOW,
+    SYS_NO_SERVER,
     SYS_NO_WIFI,
     clear_status,
     set_status,
 };
-use crate::sensor::SENSOR_QUE;
+use crate::sensor::{
+    QUEUE_EVICTIONS,
+    SENSOR_QUE,
+};
+use crate::watchdog::uptime;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
@@ -144,132 +157,146 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 
-/// socket-timeout: соединение без входящих сегментов дольше — мёртвое. Он же
-/// ограничивает `connect` к недоступному серверу.
-const TCP_TIMEOUT: Duration = Duration::from_secs(120);
+/// Предел одной отправки: `send_to` ждёт места в tx-буфере, а без сети оно
+/// может не освободиться.
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Предел на одну операцию отправки: запись порции пакета или ожидание ACK.
-/// Без него ожидание ограничено только socket-timeout'ом (120с, сбрасывается
-/// любым входящим сегментом) и могло перерасти `NET_STALL_LIMIT` (180с) ⇒
-/// ресет всего чипа вместо реконнекта.
-const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+/// Сон без событий не дольше этого: heartbeat watchdog и подхват показаний
+/// из очереди (в живом режиме показание уходит не позже чем через столько).
+const MAX_IDLE: Duration = Duration::from_secs(5);
 
-/// Сколько ждём ухода RST после `abort`, прежде чем переиспользовать сокет.
-/// Без сети RST не уйдёт никогда — поэтому предел; `connect` всё равно
-/// начинает с чистого сокета.
-const ABORT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+/// Приём — только подтверждения (`ACK_DATAGRAM_LEN` = 39 Б).
+const RX_BUF: usize = 256;
+/// Передача — одна датаграмма `MAX_DATAGRAM` с запасом.
+const TX_BUF: usize = 1280;
+/// Записей о датаграммах в каждом буфере.
+const PACKETS: usize = 4;
 
-/// Драйвер `meteo_core::sender::Sender`: исполняет его действия на TCP-сокете
-/// и возвращает итог. Логика доставки (дописывание пакета, чистка батча только
-/// после ACK, повтор после обрыва) — в автомате, с DST-тестом на хосте.
+/// Бэклог отправителя (~80 КБ) собран при компиляции: создание в рантайме
+/// провело бы его через стек.
+static BACKLOG: ConstStaticCell<Backlog> = ConstStaticCell::new(Backlog::new());
+
+/// Драйвер `meteo_core::sender::Sender` на UDP-сокете: кормит автомат
+/// показаниями и подтверждениями, отправляет то, что он отдаёт, спит до его
+/// дедлайна. Логика доставки (окно подтверждений, переотправка, живой режим)
+/// — в автомате, с DST на хосте.
 #[embassy_executor::task]
 pub async fn network_send_loop(stack: Stack<'static>) {
-    let mut rx_buffer = [0; 1024];
-    let mut tx_buffer = [0; 2048];
+    let mut rx_meta = [PacketMetadata::EMPTY; PACKETS];
+    let mut rx_buffer = [0; RX_BUF];
+    let mut tx_meta = [PacketMetadata::EMPTY; PACKETS];
+    let mut tx_buffer = [0; TX_BUF];
+    let mut incoming = [0u8; RX_BUF];
 
     stack.wait_link_up().await;
     stack.wait_config_up().await;
 
-    let remote_endpoint = (SERVER_IP, SERVER_PORT);
+    let server: IpEndpoint = (SERVER_IP, SERVER_PORT).into();
+    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
+    // Порт 0 ⇒ embassy-net выдаёт динамический; сервер отвечает на него же.
+    // Свежий сокет с неуказанным адресом привязывается всегда.
+    socket
+        .bind(0)
+        .expect("a fresh UDP socket binds to an ephemeral port");
 
-    // Один сокет на всю жизнь таски: после обрыва он `abort`-ится и снова
-    // уходит в `connect` (тот сбрасывает состояние, таймаут сохраняется).
-    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-    socket.set_timeout(Some(TCP_TIMEOUT));
-
-    // Ключ постоянный ⇒ key schedule AES разворачиваем один раз на таску, а не
-    // на каждый пакет. `new` от массива фиксированной длины упасть не может.
-    let mut sender = Sender::new(Aes128Gcm::new(&SECRET_KEY.into()));
-    let mut outcome = perform(&mut socket, remote_endpoint, sender.start()).await;
+    // Радио включено с момента подключения ⇒ RNG истинно случайный (ESP32-C3
+    // TRM, Random Number Generator). Две загрузки совпадут по BootId (и тогда
+    // повторят nonce) с вероятностью 2⁻³² на пару — принято в плане, этап 3.1.
+    let boot = BootId(Rng::new().random());
+    println!("net: boot id {:08x}", boot.0);
+    // Ключ постоянный ⇒ key schedule AES разворачиваем один раз на таску.
+    // `new` от массива фиксированной длины упасть не может.
+    let mut sender = Sender::new(Aes128Gcm::new(&SECRET_KEY.into()), boot, uptime(), BACKLOG.take());
+    let mut mode = sender.mode();
 
     loop {
-        // heartbeat для watchdog: одно действие на итерацию, каждое ограничено
-        // по времени (connect — TCP_TIMEOUT, запись/ACK — SEND_TIMEOUT, сон ≤5с).
-        // Бьётся и при лежащем сервере: retry — не зависание.
+        // heartbeat для watchdog: итерация ограничена по времени (отправка —
+        // SEND_TIMEOUT на датаграмму, ожидание — MAX_IDLE). Бьётся и при
+        // лежащем сервере: повтор — не зависание.
         crate::watchdog::beat_net();
 
-        if outcome == Event::Flushed {
-            println!("delivered {} readings", sender.in_flight());
-        }
-        let action = {
-            // Замок только на время шага автомата — не через await'ы сокета,
-            // иначе sensor-таска ждала бы его на enqueue.
-            let mut queue = SENSOR_QUE.lock().await;
-            sender.step(outcome, &mut queue)
-        };
-        outcome = perform(&mut socket, remote_endpoint, action).await;
-    }
-}
+        take_readings(&mut sender).await;
+        send_due(&socket, server, &mut sender).await;
 
-/// Исполнить действие автомата и вернуть его итог.
-async fn perform(socket: &mut TcpSocket<'_>, endpoint: (Ipv4Addr, u16), action: Action<'_>) -> Event {
-    match action {
-        Action::Connect => {
-            println!("connecting...");
-            match socket.connect(endpoint).await {
-                Ok(()) => {
-                    println!("connected!");
-                    clear_status(SYS_NO_TCP);
-                    Event::Connected
-                }
-                Err(e) => {
-                    println!("connect error: {:?}", e);
-                    drop_connection(socket).await
+        // Один писатель бита: эта таска, по слову автомата.
+        if sender.server_reachable() {
+            clear_status(SYS_NO_SERVER);
+        } else {
+            set_status(SYS_NO_SERVER);
+        }
+
+        let idle_end = Instant::now() + MAX_IDLE;
+        let wake = sender.deadline().map_or(idle_end, |d| {
+            idle_end.min(Instant::from_micros(d.0.as_micros() as u64))
+        });
+        match with_deadline(wake, socket.recv_from(&mut incoming)).await {
+            Ok(Ok((len, meta))) if meta.endpoint == server => {
+                if let Err(e) = sender.on_datagram(&mut incoming[..len], uptime()) {
+                    println!("net: server datagram rejected: {:?}", e);
                 }
             }
+            Ok(Ok((_, meta))) => println!("net: datagram from a stranger {:?} ignored", meta.endpoint),
+            Ok(Err(e)) => println!("net: receive error: {:?}", e),
+            Err(TimeoutError) => {}
         }
-        // `write` берёт сколько влезло в tx-буфер; остаток автомат пришлёт
-        // следующим `Write`.
-        Action::Write(bytes) => {
-            match with_timeout(SEND_TIMEOUT, socket.write(bytes)).await {
-                Ok(Ok(n)) => Event::Written(n),
-                Ok(Err(e)) => {
-                    println!("write error: {:?}", e);
-                    drop_connection(socket).await
-                }
-                Err(TimeoutError) => {
-                    println!("write timeout ({}s)", SEND_TIMEOUT.as_secs());
-                    drop_connection(socket).await
-                }
+
+        if sender.mode() != mode {
+            mode = sender.mode();
+            match mode {
+                Mode::Live { until } => println!("net: live mode until uptime {}s", until.0.as_secs()),
+                Mode::Batch => println!("net: batch mode"),
             }
-        }
-        Action::Flush => {
-            match with_timeout(SEND_TIMEOUT, socket.flush()).await {
-                // `flush` embassy-net 0.9 отдаёт `Ok` и когда сокет ушёл в
-                // `Closed` (RST/таймаут) с недоставленными данными: его условие
-                // ожидания — `send_queue() > 0 && state() != Closed`. Доставку
-                // подтверждает только живое состояние после него.
-                Ok(Ok(())) if socket.state() != State::Closed => Event::Flushed,
-                Ok(Ok(())) => {
-                    println!("connection closed before ACK");
-                    drop_connection(socket).await
-                }
-                Ok(Err(e)) => {
-                    println!("flush error: {:?}", e);
-                    drop_connection(socket).await
-                }
-                Err(TimeoutError) => {
-                    println!("send timeout: no ACK in {}s", SEND_TIMEOUT.as_secs());
-                    drop_connection(socket).await
-                }
-            }
-        }
-        Action::Sleep(pause) => {
-            Timer::after(Duration::from_millis(pause.as_millis() as u64)).await;
-            Event::Woke
         }
     }
 }
 
-/// Закрыть соединение после ошибки: сокет готов к новому `connect`.
-async fn drop_connection(socket: &mut TcpSocket<'_>) -> Event {
-    set_status(SYS_NO_TCP);
-    socket.abort();
-    if with_timeout(ABORT_FLUSH_TIMEOUT, socket.flush()).await.is_err() {
-        println!(
-            "RST not sent in {}s, reusing socket anyway",
-            ABORT_FLUSH_TIMEOUT.as_secs()
-        );
+/// Забрать показания из передаточной очереди в бэклог. `SYS_BUF_OVERFLOW` —
+/// один писатель, эта таска: потеря в очереди (счётчик sensor-таски) или
+/// вытеснение из бэклога ставят бит, забор без потерь его гасит.
+async fn take_readings(sender: &mut Sender<'_>) {
+    // Замок только на перекладку — не через await'ы сокета, иначе
+    // sensor-таска ждала бы его на enqueue.
+    let mut queue = SENSOR_QUE.lock().await;
+    if queue.is_empty() {
+        return;
     }
-    Event::Failed
+    let mut lost = queue_losses_since_last_take();
+    while let Some(reading) = queue.dequeue() {
+        if let Some(evicted) = sender.on_reading(reading) {
+            println!("net: backlog full, dropped reading at {}", evicted.time.0);
+            lost = true;
+        }
+    }
+    if lost {
+        set_status(SYS_BUF_OVERFLOW);
+    } else {
+        clear_status(SYS_BUF_OVERFLOW);
+    }
+}
+
+/// Были ли потери в передаточной очереди с прошлого забора.
+fn queue_losses_since_last_take() -> bool {
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    let now = QUEUE_EVICTIONS.load(Ordering::Relaxed);
+    SEEN.swap(now, Ordering::Relaxed) != now
+}
+
+/// Отправить всё, что автомат считает пора отправить.
+async fn send_due(socket: &UdpSocket<'_>, server: IpEndpoint, sender: &mut Sender<'_>) {
+    while let Some(datagram) = sender.poll(uptime()) {
+        let len = datagram.len();
+        match with_timeout(SEND_TIMEOUT, socket.send_to(datagram, server)).await {
+            Ok(Ok(())) => println!("net: sent {} B, backlog {}", len, sender.backlog_len()),
+            Ok(Err(e)) => {
+                println!("net: send error: {:?}", e);
+                sender.on_send_failed(uptime());
+                return;
+            }
+            Err(TimeoutError) => {
+                println!("net: send timeout ({}s)", SEND_TIMEOUT.as_secs());
+                sender.on_send_failed(uptime());
+                return;
+            }
+        }
+    }
 }

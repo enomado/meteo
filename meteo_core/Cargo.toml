@@ -4,13 +4,19 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Логика прошивки без железа: формат пакета, LED-палитра, решение watchdog,
-# выбор сети, автомат отправителя. `no_std`, без esp-зависимостей ⇒ тесты
-# идут на хосте (`cargo test` в этой директории): `meteo/.cargo/config.toml`
-# с riscv-таргетом сюда не дотягивается.
+# Логика прошивки без железа: протокол (датаграмма, кодек, окно приёма,
+# отправитель), LED-палитра, решение watchdog, выбор сети. `no_std`, без
+# esp-зависимостей ⇒ тесты идут на хосте (`cargo test` в этой директории):
+# `meteo/.cargo/config.toml` с riscv-таргетом сюда не дотягивается.
+
+[features]
+# Сторона приёмника протокола v2 (`server`: окна по загрузкам в HashMap).
+std = []
 
 [dependencies]
 aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
+# round() для перевода f32 в фиксированную точку без std.
+libm = "0.2.16"
 # serde: декодирование батча приёмником в тот же тип, что кодирует прошивка.
 heapless = { version = "0.9", features = ["serde"] }
 # experimental-derive: `#[derive(MaxSize)]` — бюджет пакета проверяется при
@@ -19,4 +25,6 @@ postcard = { version = "1.1.3", default-features = false, features = ["experimen
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
+# Тесты гоняют и сторону приёмника (DST: модель сервера — настоящий `server`).
+meteo_core = { path = ".", features = ["std"] }
 proptest = "1.11"

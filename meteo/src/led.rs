@@ -32,7 +32,7 @@ use portable_atomic::{
 
 // --- System status bits (bit_idx+1 = число миганий) ---
 pub const SYS_BUF_OVERFLOW: u8 = 1 << 0; // 1× — буфер переполнен
-pub const SYS_NO_TCP: u8 = 1 << 1; // 2× — нет TCP/сервера
+pub const SYS_NO_SERVER: u8 = 1 << 1; // 2× — сервер не подтверждает данные
 pub const SYS_NO_PERIPH: u8 = 1 << 2; // 3× — нет периферии (BMP390/SCD41)
 pub const SYS_NO_WIFI: u8 = 1 << 3; // 4× — нет WiFi/NTP
 // Латч-биты (не текущий статус, а «этот boot после аварийного reset»): ставятся
@@ -76,7 +76,7 @@ impl StatusBit {
 }
 
 /// Порядок = приоритет проигрывания (по возрастанию номера бита).
-/// SYS_NO_TCP цвета не имеет намеренно: мигает текущим CO2-цветом, чтобы «нет
+/// SYS_NO_SERVER цвета не имеет намеренно: мигает текущим CO2-цветом, чтобы «нет
 /// сервера» не перекрывало индикацию воздуха.
 const STATUS_BITS: [StatusBit; 6] = [
     StatusBit {
@@ -85,8 +85,8 @@ const STATUS_BITS: [StatusBit; 6] = [
         color: Some(Rgb::new(BLINK_LEVEL, BLINK_LEVEL / 2, 0)), // оранжевый — warning
     },
     StatusBit {
-        mask:  SYS_NO_TCP,
-        name:  "NO_TCP",
+        mask:  SYS_NO_SERVER,
+        name:  "NO_SERVER",
         color: None, // текущий CO2-цвет
     },
     StatusBit {

@@ -40,14 +40,20 @@ use meteo_core::backlog::{
     SensorQueue,
     push_evicting,
 };
-use meteo_core::wire::{
-    BaroReading,
-    ScdReading,
-    SensorData,
+use meteo_core::codec::{
+    CentiPascal,
+    MilliCelsius,
+    MilliPercentRh,
+    Ppm,
+    Reading,
+};
+use meteo_core::wire::EpochMillis;
+use portable_atomic::{
+    AtomicU32,
+    Ordering,
 };
 
 use crate::led::{
-    SYS_BUF_OVERFLOW,
     SYS_NO_PERIPH,
     clear_co2,
     clear_status,
@@ -72,6 +78,41 @@ pub type BarometerDevice<'a> = Bmp390<
 >;
 
 pub type ScdDevice<'a> = Scd4x<I2c<'a, esp_hal::Async>, Delay>;
+
+/// Показание BMP390 как его отдаёт драйвер: давление, Па; температура, °C.
+struct BaroSample {
+    pressure: f32,
+    temp:     f32,
+}
+
+/// Показание SCD41 как его отдаёт драйвер: CO2, ppm; влажность, %; температура, °C.
+struct ScdSample {
+    co2:      u16,
+    humidity: f32,
+    temp:     f32,
+}
+
+/// Канал в фиксированной точке. Не перевелось (NaN/∞/вне i32) ⇒ канал
+/// отсутствует и это видно в логе: на провод NaN не попадает.
+fn channel<T>(name: &str, raw: f32, convert: impl FnOnce(f32) -> Option<T>) -> Option<T> {
+    let value = convert(raw);
+    if value.is_none() {
+        println!("{}: value {} not representable, channel dropped", name, raw);
+    }
+    value
+}
+
+/// Строка для отправки из показаний датчиков этого цикла.
+fn to_reading(time: EpochMillis, baro: Option<&BaroSample>, scd: Option<&ScdSample>) -> Reading {
+    Reading {
+        time,
+        pressure: baro.and_then(|b| channel("BMP390 pressure", b.pressure, CentiPascal::from_pascal)),
+        baro_temp: baro.and_then(|b| channel("BMP390 temp", b.temp, MilliCelsius::from_celsius)),
+        co2: scd.map(|s| Ppm(s.co2)),
+        humidity: scd.and_then(|s| channel("SCD41 humidity", s.humidity, MilliPercentRh::from_percent)),
+        scd_temp: scd.and_then(|s| channel("SCD41 temp", s.temp, MilliCelsius::from_celsius)),
+    }
+}
 
 /// Предел опросов `data_ready` (раз в секунду). Single-shot SCD41 длится 5с по
 /// даташиту, ×2 запас. Без предела датчик, вечно отвечающий «не готов», вешал
@@ -99,7 +140,7 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
 /// Один замер SCD41: single-shot → ожидание data_ready → чтение.
 /// `None` — замер в этом цикле не удался (причина уже в логе); вызывающий
 /// гасит CO2 на LED и поднимает `SYS_NO_PERIPH`.
-async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdReading> {
+async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdSample> {
     if let Err(e) = scd.measure_single_shot().await {
         println!("SCD41: single shot error: {:?}", e);
         return None;
@@ -112,7 +153,7 @@ async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdReading> {
     match scd.read_measurement().await {
         Ok(m) => {
             println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
-            Some(ScdReading {
+            Some(ScdSample {
                 co2:      m.co2,
                 humidity: m.humidity,
                 temp:     m.temperature,
@@ -128,7 +169,7 @@ async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdReading> {
 /// Результат одного опроса BMP390. «Ещё не готов» — штатное состояние (ODR
 /// ~0.05 Гц), а не ошибка: реакция на них разная, поэтому состояния разведены.
 enum BaroPoll {
-    Ready(BaroReading),
+    Ready(BaroSample),
     NotReady,
     /// Ошибка шины. НЕ паникуем (было: `.unwrap()` → reset всего чипа на
     /// транзиенте SPI) — вызывающий решает, ретраить или пропустить цикл.
@@ -143,7 +184,7 @@ async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> BaroPoll {
         Ok(_) => {
             match barometer.read_sensor_data().await {
                 Ok(data) => {
-                    BaroPoll::Ready(BaroReading {
+                    BaroPoll::Ready(BaroSample {
                         pressure: data.pressure(),
                         temp:     data.temperature(),
                     })
@@ -245,17 +286,20 @@ pub async fn get_barometer_spi<'a>(
     }
 }
 
-/// Очередь показаний к отправке (ёмкость и вытеснение — `meteo_core::backlog`).
+/// Передаточная очередь показаний к сетевой таске (ёмкость и вытеснение —
+/// `meteo_core::backlog`).
 pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, SensorQueue> = Mutex::new(SensorQueue::new());
 
-async fn enqueue_sensor_data(mdata: SensorData) {
+/// Сколько показаний вытеснено из переполненной очереди с boot. LED-бит
+/// `SYS_BUF_OVERFLOW` ставит сетевая таска (один писатель) по этому счётчику
+/// и по вытеснениям из своего бэклога.
+pub static QUEUE_EVICTIONS: AtomicU32 = AtomicU32::new(0);
+
+async fn enqueue_reading(reading: Reading) {
     let mut queue = SENSOR_QUE.lock().await;
-    match push_evicting(&mut queue, mdata) {
-        None => clear_status(SYS_BUF_OVERFLOW),
-        Some(evicted) => {
-            println!("queue full: dropped reading at {}", evicted.time.0);
-            set_status(SYS_BUF_OVERFLOW);
-        }
+    if let Some(evicted) = push_evicting(&mut queue, reading) {
+        println!("queue full: dropped reading at {}", evicted.time.0);
+        QUEUE_EVICTIONS.add(1, Ordering::Relaxed);
     }
 }
 
@@ -348,7 +392,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         // 1) читаем BMP390 если готов. Ошибку шины НЕ паникуем (было: .unwrap()
         // → reset всего чипа на транзиенте SPI): пропускаем давление в этом
         // цикле, сбой учитываем в SYS_NO_PERIPH в конце итерации.
-        let mut baro: Option<BaroReading> = None;
+        let mut baro: Option<BaroSample> = None;
         let mut baro_failed = false;
         if let Some(ref mut barometer) = barometer {
             match poll_barometer(barometer).await {
@@ -391,13 +435,13 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         // NTP-синка). try_get неблокирующий; once-synced остаётся Some(true) и при
         // последующих кратких обрывах WiFi — буферизация продолжается. Холодный
         // старт без WiFi → не засоряем очередь baked-in таймстампами.
+        // Показание без единого канала (оба датчика молчат) не кладём:
+        // строка из одного времени базе ничего не говорит.
         if ntp_ready_receiver.try_get() == Some(true) {
-            let mdata = SensorData {
-                baro,
-                scd: scd_reading,
-                time: now_epoch(),
-            };
-            enqueue_sensor_data(mdata).await;
+            let reading = to_reading(now_epoch(), baro.as_ref(), scd_reading.as_ref());
+            if reading.has_any_channel() {
+                enqueue_reading(reading).await;
+            }
         }
 
         // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)

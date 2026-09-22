@@ -182,7 +182,8 @@ const FEED_INTERVAL: Duration = Duration::from_secs(10);
 /// железо ресетит в пределах 120с.
 const RWDT_TIMEOUT_SECS: u64 = 120;
 
-fn uptime() -> Uptime {
+/// Время с boot по часам embassy (им же живут надзор и отправитель).
+pub fn uptime() -> Uptime {
     Uptime(core::time::Duration::from_micros(Instant::now().as_micros()))
 }
 

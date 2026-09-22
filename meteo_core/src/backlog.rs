@@ -1,16 +1,18 @@
-//! Очередь показаний между sensor-таской и отправителем.
+//! Передаточная очередь показаний sensor-таска → сетевая таска. Долгое
+//! хранение до подтверждения — бэклог отправителя (`sender::BACKLOG`); эта
+//! очередь только развязывает таски на время, пока сетевая занята отправкой.
 
 use heapless::spsc::Queue;
 
-use crate::wire::SensorData;
+use crate::codec::Reading;
 
-/// Очередь показаний к отправке. heapless `Queue<_, N>` вмещает N−1 элемент ⇒
-/// 59 показаний ≈ 30 мин при цикле ~30с; дальше вытесняются самые старые.
-pub type SensorQueue = Queue<SensorData, 60>;
+/// heapless `Queue<_, N>` вмещает N−1 элемент ⇒ 59 показаний ≈ 30 мин при
+/// цикле ~30с; дальше вытесняются самые старые.
+pub type SensorQueue = Queue<Reading, 60>;
 
 /// Кладёт показание. Очередь полна ⇒ вытесняет самое старое и возвращает его:
 /// потеря учтена, а не молча проглочена.
-pub fn push_evicting(queue: &mut SensorQueue, reading: SensorData) -> Option<SensorData> {
+pub fn push_evicting(queue: &mut SensorQueue, reading: Reading) -> Option<Reading> {
     match queue.enqueue(reading) {
         Ok(()) => None,
         Err(reading) => {
