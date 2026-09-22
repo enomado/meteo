@@ -29,6 +29,7 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
+use postcard::experimental::max_size::MaxSize;
 
 use crate::led::{
     SYS_NO_TCP,
@@ -152,19 +153,30 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 
-/// Ёмкость батча в памяти. Заполняется не полностью — фактический размер режет
-/// `MAX_BATCH`; запас нужен, чтобы буфер не пришлось трогать при правке батча.
-const BATCH_CAP: usize = 40;
+/// Длина префикса `u32 BE payload_len` перед шифротекстом.
+const LEN_PREFIX: usize = 4;
+/// AES-GCM tag, дописывается сразу за шифротекстом.
+const TAG_LEN: usize = 16;
+/// Буфер пакета целиком: префикс + шифротекст + tag.
+const BUF_LEN: usize = 1024;
 
-/// Батч показаний между очередью сенсора и сокетом. Алиас, потому что ёмкость
-/// раньше повторялась литералом в трёх сигнатурах и разъезжалась при правке.
-type SensorBatch = heapless::Vec<SensorData, BATCH_CAP>;
-
-/// Максимум записей в один пакет. Бюджет postcard в write_packet = 1004 байта
-/// (body_buf[4..1024-16]); одна SensorData ≤ ~32 байт (baro 9 + scd 13 + time 10
-/// varint). 24 × 32 + 1 = 769 < 1004 — с большим запасом, overflow невозможен.
-/// Остаток очереди (до 60) дренится следующими пакетами (каждые ~3с).
+/// Максимум записей в один пакет. Остаток очереди дренится следующими пакетами
+/// (каждые ~3с).
 const MAX_BATCH: usize = 24;
+
+// Худший батч влезает в буфер пакета: postcard пишет срез как varint-длину
+// (usize) и элементы подряд. Компилятор проверяет то, что раньше держала
+// арифметика в комментарии ⇒ сериализация в `write_packet` не может
+// переполнить буфер (было: паника через .unwrap() → заморозка чипа, инцидент
+// 2026-07-04; потом — ветка ошибки, выбрасывавшая батч).
+const _: () = assert!(
+    usize::POSTCARD_MAX_SIZE + MAX_BATCH * SensorData::POSTCARD_MAX_SIZE <= BUF_LEN - LEN_PREFIX - TAG_LEN
+);
+
+/// Батч показаний между очередью сенсора и сокетом. Ёмкость = `MAX_BATCH`:
+/// бюджет пакета выше доказан для неё, поэтому больший батч не собрать и
+/// типом.
+type SensorBatch = heapless::Vec<SensorData, MAX_BATCH>;
 
 async fn get_sensor_data_chunk() -> SensorBatch {
     let mut out = SensorBatch::new();
@@ -172,16 +184,13 @@ async fn get_sensor_data_chunk() -> SensorBatch {
         return out;
     };
 
-    // Cap на MAX_BATCH: НЕ пихаем весь backlog в один пакет — иначе postcard
-    // переполнит фикс-буфер (было: паника через .unwrap() → заморозка чипа,
-    // инцидент 2026-07-04). Дренаж backlog'а — за несколько пакетов.
-    while out.len() < MAX_BATCH {
+    // НЕ пихаем весь backlog в один пакет: он не влез бы в буфер. Дренаж
+    // backlog'а — за несколько пакетов.
+    while !out.is_full() {
         let Some(v) = p.dequeue() else {
             break;
         };
-        if out.push(v).is_err() {
-            break;
-        }
+        out.push(v).expect("loop runs only while the batch has room");
     }
 
     out
@@ -249,13 +258,6 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                 Ok(()) => {
                     measurements_buf.clear();
                 }
-                Err(SendError::Serialize) => {
-                    // Батч не влезает в буфер. При MAX_BATCH недостижимо, но НЕ
-                    // паникуем (было: .unwrap() → заморозка чипа). Дропаем батч,
-                    // чтобы не застрять в вечном ретрае одного пакета.
-                    println!("serialize error: batch too big, dropping {} readings", p.len());
-                    measurements_buf.clear();
-                }
                 Err(SendError::Tcp(e)) => {
                     // Батч НЕ чистим: без ACK неизвестно, дошёл ли он. Повтор на
                     // новом соединении безопасен — приёмник идемпотентен по времени.
@@ -279,13 +281,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     }
 }
 
-/// Ошибка отправки пакета. Разделяем сериализацию и транспорт: overflow буфера
-/// — НЕ повод рвать соединение (и тем более паниковать), а TCP-ошибка — повод
-/// реконнекта.
+/// Ошибка отправки пакета — любая ведёт к реконнекту. Переполнения буфера
+/// среди причин нет: его исключает проверка бюджета пакета при компиляции.
 enum SendError {
-    /// postcard не влез в фикс-буфер (батч слишком большой). При MAX_BATCH
-    /// недостижимо; пришло на смену `.unwrap()`, который морозил чип.
-    Serialize,
     /// Ошибка записи в сокет или соединение закрылось до ACK — рвём и
     /// реконнектимся.
     Tcp(embassy_net::tcp::Error),
@@ -325,20 +323,13 @@ async fn write_packet(
     p: &SensorBatch,
     nonce_counter: u64,
 ) -> Result<(), SendError> {
-    /// Длина префикса `u32 BE payload_len` перед шифротекстом.
-    const LEN_PREFIX: usize = 4;
-    const TAG_LEN: usize = 16;
-    const BUF_LEN: usize = 1024;
     let mut body_buf = [0u8; BUF_LEN];
 
-    // postcard в body_buf[LEN_PREFIX..], оставив запас под tag в конце. Overflow
-    // → Err (НЕ паника): при MAX_BATCH недостижимо, но fail-safe важнее — паника
-    // здесь морозила чип навсегда (инцидент 2026-07-04).
+    // postcard в body_buf[LEN_PREFIX..], оставив запас под tag в конце.
     let body = &mut body_buf[LEN_PREFIX..BUF_LEN - TAG_LEN];
-    let plain_len = match postcard::to_slice(p.as_slice(), body) {
-        Ok(s) => s.len(),
-        Err(_) => return Err(SendError::Serialize),
-    };
+    let plain_len = postcard::to_slice(p.as_slice(), body)
+        .expect("packet budget checked at compile time")
+        .len();
 
     let cipher = Aes128Gcm::new_from_slice(&SECRET_KEY).unwrap();
 

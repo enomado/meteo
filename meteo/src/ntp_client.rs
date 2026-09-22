@@ -22,6 +22,7 @@ use portable_atomic::{
     AtomicI64,
     Ordering,
 };
+use postcard::experimental::max_size::MaxSize;
 use sntpc::{
     NtpContext,
     NtpResult,
@@ -39,7 +40,7 @@ const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
 /// рядом ходят микросекунды NTP-оффсета и `Instant` с момента boot, и голый
 /// `u64` их не различал. На проводе остаётся числом: postcard сериализует
 /// newtype прозрачно, формат пакета не меняется.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, MaxSize)]
 pub struct EpochMillis(pub u64);
 
 /// Смещение от локальных часов к wall-clock, в МИКРОсекундах: так его отдаёт
