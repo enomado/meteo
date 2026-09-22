@@ -27,6 +27,12 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
+use meteo_core::wifi_pick::{
+    Network,
+    Rssi,
+    round_robin,
+    strongest,
+};
 use meteo_core::wire::{
     PacketBuf,
     PacketCounter,
@@ -48,17 +54,14 @@ include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 /// 20 с запасом покрывает и людное окружение — нам нужны лишь свои SSID.
 const SCAN_MAX_APS: usize = 20;
 
-/// Выбирает сеть из `WIFI_NETWORKS` с самым сильным сигналом.
+/// Выбирает сеть из `WIFI_NETWORKS` с самым сильным сигналом (решение —
+/// `meteo_core::wifi_pick`, здесь только скан).
 ///
 /// Одна сеть в конфиге — выбирать не из чего, скан пропускаем (это ~2с радио на
 /// каждый реконнект). Если скан упал или ни одного своего SSID в эфире нет —
-/// ПЕРЕБИРАЕМ сети по кругу (`attempt`), а не липнем к первой: при сломанном
-/// скане иначе вторая сеть не была бы испробована никогда.
-async fn pick_network(
-    controller: &mut WifiController<'static>,
-    attempt: usize,
-) -> (&'static str, &'static str) {
-    let fallback = WIFI_NETWORKS[attempt % WIFI_NETWORKS.len()];
+/// перебираем сети по кругу (`attempt`).
+async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) -> Network<'static> {
+    let fallback = *round_robin(WIFI_NETWORKS, attempt);
 
     if WIFI_NETWORKS.len() < 2 {
         return fallback;
@@ -73,20 +76,11 @@ async fn pick_network(
         }
     };
 
-    let mut best: Option<((&'static str, &'static str), i8)> = None;
-    for ap in aps.iter() {
-        let Some(net) = WIFI_NETWORKS.iter().find(|(ssid, _)| *ssid == ap.ssid.as_str()) else {
-            continue;
-        };
-        if best.is_none_or(|(_, rssi)| ap.signal_strength > rssi) {
-            best = Some((*net, ap.signal_strength));
-        }
-    }
-
-    match best {
+    let seen = aps.iter().map(|ap| (ap.ssid.as_str(), Rssi(ap.signal_strength)));
+    match strongest(WIFI_NETWORKS, seen) {
         Some((net, rssi)) => {
-            println!("scan: picked {} (rssi {})", net.0, rssi);
-            net
+            println!("scan: picked {} (rssi {})", net.0, rssi.0);
+            *net
         }
         None => {
             println!("scan: no configured SSID on air, trying {}", fallback.0);
