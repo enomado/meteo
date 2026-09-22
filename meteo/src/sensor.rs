@@ -37,7 +37,11 @@ use esp_hal::time::Rate;
 use esp_println::println;
 use heapless::spsc::Queue;
 use libscd::asynchronous::scd4x::Scd4x;
-use postcard::experimental::max_size::MaxSize;
+use meteo_core::wire::{
+    BaroReading,
+    ScdReading,
+    SensorData,
+};
 
 use crate::led::{
     SYS_BUF_OVERFLOW,
@@ -49,7 +53,6 @@ use crate::led::{
 };
 use crate::ntp_client::{
     CLOCK_IS_SYNCED_WATCH,
-    EpochMillis,
     now_epoch,
 };
 use crate::spi_helper::BarometerArgs;
@@ -237,33 +240,6 @@ pub async fn get_barometer_spi<'a>(
             None
         }
     }
-}
-
-/// BMP390 одно показание — pressure (Pa) + temperature (°C). Поля всегда заполнены
-/// или отсутствуют синхронно (читаются одним вызовом read_sensor_data).
-#[derive(Debug, serde::Serialize, serde::Deserialize, MaxSize)]
-pub struct BaroReading {
-    pub pressure: f32,
-    pub temp:     f32,
-}
-
-/// SCD41 одно показание — CO2 (ppm), humidity (%), temperature (°C).
-/// Поля всегда заполнены или отсутствуют синхронно (один read_measurement).
-#[derive(Debug, serde::Serialize, serde::Deserialize, MaxSize)]
-pub struct ScdReading {
-    pub co2:      u16,
-    pub humidity: f32,
-    pub temp:     f32,
-}
-
-/// Одна строка измерений на проводе. `MaxSize` держит бюджет пакета
-/// (см. `network`): новое поле увеличит худший размер, и сборка упадёт, если он
-/// перестанет влезать.
-#[derive(Debug, serde::Serialize, serde::Deserialize, MaxSize)]
-pub struct SensorData {
-    pub baro: Option<BaroReading>,
-    pub scd:  Option<ScdReading>,
-    pub time: EpochMillis,
 }
 
 /// Очередь показаний к отправке. heapless `Queue<_, N>` вмещает N−1 элемент ⇒

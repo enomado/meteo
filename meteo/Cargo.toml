@@ -18,10 +18,9 @@ libscd = { version = "0.5.1", default-features = false, features = ["async", "sc
 # Фича portable-atomic нужна на riscv32imc (нет native CAS).
 heapless = { version = "0.9", features = ["portable-atomic"] }
 portable-atomic = { version = "1.15.0" }
-serde = { version = "1.0.229", default-features = false, features = ["derive"] }
-# experimental-derive: `#[derive(MaxSize)]` — бюджет пакета проверяется при
-# компиляции (network.rs).
-postcard = { version = "1.1.3", features = ["experimental-derive"] }
+# Формат пакета, LED-палитра, решение watchdog и прочая логика без железа —
+# тестируется на хосте (`cd ../meteo_core && cargo test`).
+meteo_core = { path = "../meteo_core" }
 aes-gcm = { version = "0.11.1", default-features = false, features = [
   "aes",
 ] }

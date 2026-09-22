@@ -1,8 +1,6 @@
-use aes_gcm::aead::AeadInOut;
 use aes_gcm::{
     Aes128Gcm,
     KeyInit,
-    Nonce,
 };
 use embassy_net::tcp::{
     Error as TcpError,
@@ -29,7 +27,12 @@ use esp_radio::wifi::{
     Interface,
     WifiController,
 };
-use postcard::experimental::max_size::MaxSize;
+use meteo_core::wire::{
+    PacketBuf,
+    PacketCounter,
+    SensorBatch,
+    encode_packet,
+};
 
 use crate::led::{
     SYS_NO_TCP,
@@ -37,12 +40,7 @@ use crate::led::{
     clear_status,
     set_status,
 };
-use crate::sensor::{
-    SENSOR_QUE,
-    SensorData,
-};
-
-// not the real crypto, because of reuse nonce!
+use crate::sensor::SENSOR_QUE;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
@@ -153,39 +151,14 @@ pub async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
 
-/// Длина префикса `u32 BE payload_len` перед шифротекстом.
-const LEN_PREFIX: usize = 4;
-/// AES-GCM tag, дописывается сразу за шифротекстом.
-const TAG_LEN: usize = 16;
-/// Буфер пакета целиком: префикс + шифротекст + tag.
-const BUF_LEN: usize = 1024;
-
-/// Максимум записей в один пакет. Остаток очереди дренится следующими пакетами
-/// (каждые ~3с).
-const MAX_BATCH: usize = 24;
-
-// Худший батч влезает в буфер пакета: postcard пишет срез как varint-длину
-// (usize) и элементы подряд. Компилятор проверяет то, что раньше держала
-// арифметика в комментарии ⇒ сериализация в `write_packet` не может
-// переполнить буфер (было: паника через .unwrap() → заморозка чипа, инцидент
-// 2026-07-04; потом — ветка ошибки, выбрасывавшая батч).
-const _: () = assert!(
-    usize::POSTCARD_MAX_SIZE + MAX_BATCH * SensorData::POSTCARD_MAX_SIZE <= BUF_LEN - LEN_PREFIX - TAG_LEN
-);
-
-/// Батч показаний между очередью сенсора и сокетом. Ёмкость = `MAX_BATCH`:
-/// бюджет пакета выше доказан для неё, поэтому больший батч не собрать и
-/// типом.
-type SensorBatch = heapless::Vec<SensorData, MAX_BATCH>;
-
 async fn get_sensor_data_chunk() -> SensorBatch {
     let mut out = SensorBatch::new();
     let Ok(mut p) = SENSOR_QUE.try_lock() else {
         return out;
     };
 
-    // НЕ пихаем весь backlog в один пакет: он не влез бы в буфер. Дренаж
-    // backlog'а — за несколько пакетов.
+    // НЕ пихаем весь backlog в один пакет: он не влез бы в буфер (ёмкость
+    // батча = `MAX_BATCH`). Дренаж backlog'а — за несколько пакетов.
     while !out.is_full() {
         let Some(v) = p.dequeue() else {
             break;
@@ -235,9 +208,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         println!("connected!");
         clear_status(SYS_NO_TCP);
 
-        // Счётчик nonce живёт внутри соединения: сервер считает пакеты с 1 на
-        // каждый accept (см. example_server), поэтому обнуляем на реконнекте.
-        let mut nonce_counter = 0u64;
+        // Счётчик пакетов (из него nonce) живёт внутри соединения: сервер
+        // считает пакеты с 1 на каждый accept, поэтому обнуляем на реконнекте.
+        let mut counter = PacketCounter::FIRST;
 
         loop {
             // heartbeat для watchdog (внутренний цикл: send). ≤3с при данных
@@ -255,9 +228,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                 continue;
             }
 
-            nonce_counter += 1;
-            println!("sending {} measurements, nonce={}", p.len(), nonce_counter);
-            let r = write_packet(&mut socket, &cipher, p, nonce_counter).await;
+            println!("sending {} measurements, packet #{}", p.len(), counter.0);
+            let r = write_packet(&mut socket, &cipher, p, counter).await;
+            counter = counter.next();
 
             match r {
                 Ok(()) => {
@@ -320,43 +293,16 @@ async fn deliver(socket: &mut TcpSocket<'_>, packet: &[u8]) -> Result<(), SendEr
     Ok(())
 }
 
-/// On-wire layout: `[u32 BE payload_len][AES-GCM ciphertext][16-byte tag]`
-/// где `payload_len` = ciphertext_len + 16 (tag inline).
-/// Шифруем in-place в `body_buf[4..]`, tag дописываем сразу после — без heap-Vec.
+/// Кодирует батч (формат — `meteo_core::wire`) и доставляет его.
 async fn write_packet(
     socket: &mut TcpSocket<'_>,
     cipher: &Aes128Gcm,
     p: &SensorBatch,
-    nonce_counter: u64,
+    counter: PacketCounter,
 ) -> Result<(), SendError> {
-    let mut body_buf = [0u8; BUF_LEN];
-
-    // postcard в body_buf[LEN_PREFIX..], оставив запас под tag в конце.
-    let body = &mut body_buf[LEN_PREFIX..BUF_LEN - TAG_LEN];
-    let plain_len = postcard::to_slice(p.as_slice(), body)
-        .expect("packet budget checked at compile time")
-        .len();
-
-    // nonce = 96 бит: 4 байта паддинга + 8 байт BE-counter. ВНИМАНИЕ: счётчик
-    // обнуляется на КАЖДОМ TCP-реконнекте (не только при рестарте MCU) ⇒ пара
-    // (ключ, nonce) повторяется на разных данных. Известная дыра, лечение —
-    // соль на соединение: docs/PLAN_hardening.md, этап 3.
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
-    let nonce = Nonce::from(nonce_bytes);
-
-    // шифрование in-place (InOutBuf поверх среза), tag отдельно
-    let plain_end = LEN_PREFIX + plain_len;
-    let tag = cipher
-        .encrypt_inout_detached(&nonce, b"", (&mut body_buf[LEN_PREFIX..plain_end]).into())
-        .expect("plaintext is under BUF_LEN, far below the AES-GCM length limit");
-    body_buf[plain_end..plain_end + TAG_LEN].copy_from_slice(&tag);
-
-    let payload_len = plain_len + TAG_LEN;
-    body_buf[..LEN_PREFIX].copy_from_slice(&(payload_len as u32).to_be_bytes());
-
-    let total_len = LEN_PREFIX + payload_len;
-    match with_timeout(SEND_TIMEOUT, deliver(socket, &body_buf[..total_len])).await {
+    let mut packet: PacketBuf = [0u8; _];
+    let total_len = encode_packet(cipher, counter, p, &mut packet);
+    match with_timeout(SEND_TIMEOUT, deliver(socket, &packet[..total_len])).await {
         Ok(delivered) => delivered?,
         Err(TimeoutError) => return Err(SendError::Timeout),
     }

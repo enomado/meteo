@@ -26,8 +26,10 @@ Each packet on the TCP stream:
   empty associated data.
 - Nonce: 4 zero bytes + 8-byte big-endian packet counter, starting at 1 per
   connection and incrementing per packet (the firmware resets it on reconnect).
-- Plaintext: a postcard-encoded `Vec<SensorData>`. Field order must match the
-  firmware (`meteo/src/sensor.rs`) — postcard is order-based, names are not sent.
+- Plaintext: a postcard-encoded sequence of `SensorData` (at most 24 per
+  packet). The structs and the encode/decode code live in `../meteo_core`
+  (`src/wire.rs`) and are shared with the firmware — postcard is order-based,
+  names are not sent, so both sides must use the same definition.
 
 `SensorData` is sparse: `baro` (BMP390: pressure Pa, temp °C) and `scd` (SCD41:
 CO2 ppm, humidity %, temp °C) are each `Option`, and `time` is ms since the Unix

@@ -20,18 +20,18 @@
 //!   counter. The counter starts at 1 for the first packet of a connection and
 //!   increments by one per packet. The firmware resets it on every reconnect,
 //!   so the receiver simply counts per accepted connection.
-//! - Plaintext: a postcard-serialized `Vec<SensorData>` (see the structs
-//!   below — field order MUST match the firmware, postcard is order-based).
+//! - Plaintext: a postcard-serialized sequence of `SensorData`.
 //!
-//! Note: reusing a counter-based nonce across reboots is a known, intentional
-//! weakness of this toy protocol — do not treat AES-GCM here as authenticated
-//! transport security.
+//! The structs and the encode/decode code live in `../meteo_core` (`wire`
+//! module) and are shared with the firmware, so both sides cannot drift apart.
+//!
+//! Note: the counter-based nonce repeats on every reconnect — a known weakness
+//! of this toy protocol, do not treat AES-GCM here as authenticated transport
+//! security (fix planned in `docs/PLAN_hardening.md`, stage 3).
 
-use aes_gcm::aead::Aead;
 use aes_gcm::{
     Aes128Gcm,
     KeyInit,
-    Nonce,
 };
 use anyhow::Context;
 use chrono::{
@@ -39,9 +39,13 @@ use chrono::{
     TimeZone,
     Utc,
 };
-use serde::{
-    Deserialize,
-    Serialize,
+use meteo_core::wire::{
+    LEN_PREFIX,
+    PacketCounter,
+    SensorBatch,
+    SensorData,
+    decode_payload,
+    payload_len,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::{
@@ -55,75 +59,37 @@ use tokio::net::{
 static KEY: [u8; 16] = *b"supersecretkey!1";
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:1234";
-/// Hard cap so a malformed length prefix can't make us allocate wildly.
-const MAX_PACKET: usize = 4 * 1024;
-
-/// BMP390 reading — pressure (Pa) + temperature (°C). Both fields are filled or
-/// absent together (read in one call on the firmware).
-#[derive(Debug, Serialize, Deserialize)]
-struct BaroReading {
-    pressure: f32,
-    temp:     f32,
-}
-
-/// SCD41 reading — CO2 (ppm), humidity (%), temperature (°C).
-#[derive(Debug, Serialize, Deserialize)]
-struct ScdReading {
-    co2:      u16,
-    humidity: f32,
-    temp:     f32,
-}
-
-/// One measurement. `baro`/`scd` are independent (a sensor may be missing or
-/// produce nothing this cycle), so the row is sparse. `time` is milliseconds
-/// since the Unix epoch (the firmware timestamps via NTP).
-///
-/// Field order must match the firmware's `SensorData` — postcard serializes by
-/// declaration order, without names.
-#[derive(Debug, Serialize, Deserialize)]
-struct SensorData {
-    baro: Option<BaroReading>,
-    scd:  Option<ScdReading>,
-    time: u64,
-}
 
 /// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded packet.
-async fn read_packet(socket: &mut TcpStream, nonce_counter: u64) -> anyhow::Result<Vec<SensorData>> {
-    // 1) length prefix
-    let mut len_buf = [0u8; 4];
+async fn read_packet(
+    socket: &mut TcpStream,
+    cipher: &Aes128Gcm,
+    counter: PacketCounter,
+) -> anyhow::Result<SensorBatch> {
+    // 1) length prefix — range-checked before reading, so a malformed prefix
+    //    can't make us allocate wildly
+    let mut len_buf = [0u8; LEN_PREFIX];
     socket.read_exact(&mut len_buf).await?;
-    let payload_len = u32::from_be_bytes(len_buf) as usize;
-    if payload_len > MAX_PACKET {
-        return Err(anyhow::anyhow!("packet too big: {payload_len} bytes"));
-    }
+    let payload_len = payload_len(len_buf).map_err(|e| anyhow::anyhow!("bad frame: {e:?}"))?;
 
     // 2) ciphertext || tag
-    let mut cipher_buf = vec![0u8; payload_len];
-    socket.read_exact(&mut cipher_buf).await?;
+    let mut payload = vec![0u8; payload_len];
+    socket.read_exact(&mut payload).await?;
 
-    // 3) decrypt: nonce = 4 zero bytes + 8-byte BE counter (mirrors firmware)
-    let cipher = Aes128Gcm::new_from_slice(&KEY).expect("16-byte key");
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[4..].copy_from_slice(&nonce_counter.to_be_bytes());
-    let nonce = Nonce::from(nonce_bytes);
-    let plaintext = cipher
-        .decrypt(&nonce, cipher_buf.as_ref())
-        .ok()
-        .context("AES-GCM decrypt failed (wrong key or out-of-sync nonce?)")?;
-
-    // 4) decode
-    let data: Vec<SensorData> = postcard::from_bytes(&plaintext).context("postcard decode failed")?;
-    Ok(data)
+    // 3) decrypt + decode
+    decode_payload(cipher, counter, &mut payload)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .context("packet rejected (wrong key or out-of-sync nonce?)")
 }
 
 /// Pretty-print a packet. This is the spot to replace with real persistence.
 fn print_readings(addr: &std::net::SocketAddr, packet: &[SensorData]) {
     for s in packet {
         let when = Utc
-            .timestamp_millis_opt(s.time as i64)
+            .timestamp_millis_opt(s.time.0 as i64)
             .single()
             .map(|dt| dt.with_timezone(&Local).to_string())
-            .unwrap_or_else(|| format!("{}ms", s.time));
+            .unwrap_or_else(|| format!("{}ms", s.time.0));
         if let Some(b) = &s.baro {
             println!(
                 "[{addr}] {when}  P={:.1} hPa  T={:.2} °C",
@@ -142,11 +108,12 @@ fn print_readings(addr: &std::net::SocketAddr, packet: &[SensorData]) {
 
 async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
     println!("[{addr}] connected");
-    let mut nonce_counter = 0u64;
+    let cipher = Aes128Gcm::new(&KEY.into());
+    // firmware's per-connection counter starts at 1
+    let mut counter = PacketCounter::FIRST;
 
     loop {
-        nonce_counter += 1; // firmware's per-connection counter starts at 1
-        let packet = match read_packet(&mut stream, nonce_counter).await {
+        let packet = match read_packet(&mut stream, &cipher, counter).await {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("[{addr}] disconnected: {e:?}");
@@ -154,8 +121,9 @@ async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
             }
         };
 
-        println!("[{addr}] packet #{nonce_counter}: {} reading(s)", packet.len());
+        println!("[{addr}] packet #{}: {} reading(s)", counter.0, packet.len());
         print_readings(&addr, &packet);
+        counter = counter.next();
 
         // >>> Plug your backend here: write `packet` to a DB, a queue, a file,
         //     forward it over gRPC, etc. The firmware doesn't care what you do.
