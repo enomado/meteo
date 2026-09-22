@@ -4,14 +4,17 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-# Minimal reference receiver for the meteo firmware wire protocol.
-# It listens on TCP, decrypts each packet (AES-128-GCM), decodes it (postcard)
-# and prints the readings. Plug your own backend where marked in `main.rs`.
+# Minimal reference receiver for the meteo firmware.
+# Protocol v2: UDP datagrams, acknowledged after the readings are stored.
+# Protocol v1 (TCP stream, older firmware) is still accepted until it is retired.
+# Plug your own backend where marked in `main.rs`.
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 aes-gcm = "0.11"
 anyhow = "1"
-# Wire format shared with the firmware (structs + encode/decode).
-meteo_core = { path = "../meteo_core" }
+# Protocol shared with the firmware; `std` enables the receiver side (`server`).
+meteo_core = { path = "../meteo_core", features = ["std"] }
 chrono = "0.4"
+# Random per-process salt for the nonces of acknowledgements.
+getrandom = "0.4"

@@ -1,33 +1,44 @@
 //! Minimal reference receiver for the `meteo` firmware.
 //!
-//! The firmware (see `../meteo`) opens a TCP connection and streams encrypted
-//! measurement packets. This example accepts those connections, decrypts and
-//! decodes each packet, and prints the readings. It deliberately does *nothing*
-//! else — wire up your own storage/backend where marked below.
+//! It accepts the firmware's data, decrypts and decodes it, prints the
+//! readings and acknowledges them. It deliberately does *nothing* else — wire
+//! up your own storage/backend where marked below.
 //!
-//! ## Wire protocol
+//! ## Protocol v2 (UDP, current firmware)
 //!
-//! Each packet on the TCP stream is:
+//! One datagram, at most 1172 bytes:
 //!
 //! ```text
-//! [ u32 big-endian payload_len ][ AES-128-GCM ciphertext || 16-byte tag ]
+//! [ 9-byte header ][ AES-128-GCM ciphertext ][ 16-byte tag ]
 //! ```
 //!
-//! - `payload_len` = ciphertext length + 16 (the GCM tag is appended inline).
-//! - Cipher: AES-128-GCM, 16-byte shared key (must match the firmware's
-//!   `config.toml` `secret_key`), empty associated data.
-//! - Nonce (96 bit): 4 zero bytes followed by an 8-byte big-endian packet
-//!   counter. The counter starts at 1 for the first packet of a connection and
-//!   increments by one per packet. The firmware resets it on every reconnect,
-//!   so the receiver simply counts per accepted connection.
-//! - Plaintext: a postcard-serialized sequence of `SensorData`.
+//! - Header, big-endian, authenticated as associated data: `b0` (version in
+//!   bits 7..4, direction in bit 3, ACK_REQ in bit 0), then boot id + sequence
+//!   number (firmware → server) or server salt + ack number (server → firmware).
+//!   The nonce is built from the header, so loss, reordering and duplicates do
+//!   not matter to decryption.
+//! - Plaintext: fixed-point readings, delta + varint encoded within one
+//!   datagram (`meteo_core::codec`).
+//! - Datagrams with ACK_REQ are answered with an acknowledgement *after* the
+//!   readings are stored: a window of which sequence numbers of that boot are
+//!   stored, plus how long the firmware should stay in live mode (send every
+//!   reading immediately). Readings the window does not confirm are resent by
+//!   the firmware in a new datagram, so storage must be idempotent by reading
+//!   time.
 //!
-//! The structs and the encode/decode code live in `../meteo_core` (`wire`
-//! module) and are shared with the firmware, so both sides cannot drift apart.
+//! Receiver logic (verification, duplicate window, ack) lives in
+//! `meteo_core::server` and is shared with the production receiver; this file
+//! is only the socket loop.
 //!
-//! Note: the counter-based nonce repeats on every reconnect — a known weakness
-//! of this toy protocol, do not treat AES-GCM here as authenticated transport
-//! security (fix planned in `docs/PLAN_hardening.md`, stage 3).
+//! ## Protocol v1 (TCP, older firmware)
+//!
+//! `[ u32 BE payload_len ][ AES-128-GCM ciphertext || tag ]` per packet,
+//! postcard-encoded `SensorData` batch, nonce from a per-connection counter
+//! (repeats on every reconnect — not transport security). Kept until old
+//! firmware is gone (`docs/PLAN_hardening.md`, stage 3.7 step 4).
+
+use std::net::SocketAddr;
+use std::time::Instant;
 
 use aes_gcm::{
     Aes128Gcm,
@@ -39,7 +50,14 @@ use chrono::{
     TimeZone,
     Utc,
 };
+use meteo_core::codec::Reading;
+use meteo_core::datagram::{
+    LiveSecs,
+    ServerSalt,
+};
+use meteo_core::server::Server;
 use meteo_core::wire::{
+    EpochMillis,
     LEN_PREFIX,
     PacketCounter,
     SensorBatch,
@@ -51,6 +69,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{
     TcpListener,
     TcpStream,
+    UdpSocket,
 };
 
 /// 16-byte AES-128 key shared with the firmware. This is the demo value
@@ -60,7 +79,94 @@ static KEY: [u8; 16] = *b"supersecretkey!1";
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:1234";
 
-/// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded packet.
+/// Receive buffer: larger than any valid datagram, so an oversized one is
+/// rejected as such instead of being silently truncated.
+const UDP_BUF: usize = 2048;
+
+fn local_time(time: EpochMillis) -> String {
+    Utc.timestamp_millis_opt(time.0 as i64)
+        .single()
+        .map(|dt| dt.with_timezone(&Local).to_string())
+        .unwrap_or_else(|| format!("{}ms", time.0))
+}
+
+/// Pretty-print v2 readings. This is the spot to replace with real persistence.
+fn print_readings(addr: &SocketAddr, readings: &[Reading]) {
+    for r in readings {
+        let mut line = format!("[{addr}] {}", local_time(r.time));
+        if let Some(p) = r.pressure {
+            line += &format!("  P={:.2} hPa", p.pascal() / 100.0);
+        }
+        if let Some(t) = r.baro_temp {
+            line += &format!("  T_baro={:.3} °C", t.celsius());
+        }
+        if let Some(co2) = r.co2 {
+            line += &format!("  CO2={} ppm", co2.0);
+        }
+        if let Some(h) = r.humidity {
+            line += &format!("  H={:.3}%", h.percent());
+        }
+        if let Some(t) = r.scd_temp {
+            line += &format!("  T_scd={:.3} °C", t.celsius());
+        }
+        println!("{line}");
+    }
+}
+
+/// Protocol v2 loop: verify → store → mark → acknowledge, in this order
+/// (`meteo_core::server` explains why).
+async fn serve_udp(socket: UdpSocket, live_for: LiveSecs) -> anyhow::Result<()> {
+    let salt = ServerSalt(getrandom::u32().map_err(|e| anyhow::anyhow!("no OS randomness: {e}"))?);
+    let mut server = Server::new(Aes128Gcm::new(&KEY.into()), salt);
+    let started = Instant::now();
+    let mut buf = vec![0u8; UDP_BUF];
+
+    loop {
+        let (len, addr) = socket.recv_from(&mut buf).await.context("UDP receive")?;
+        let now = started.elapsed();
+        let incoming = match server.receive(&mut buf[..len], now) {
+            Ok(incoming) => incoming,
+            Err(e) => {
+                eprintln!("[{addr}] datagram rejected: {e:?}");
+                continue;
+            }
+        };
+        let (boot, seq, ack_req) = (incoming.boot, incoming.seq, incoming.ack_req);
+
+        if incoming.duplicate {
+            println!(
+                "[{addr}] boot {:08x} #{}: duplicate, already stored",
+                boot.0, seq.0
+            );
+        } else {
+            let readings = match incoming.collect_readings() {
+                Ok(readings) => readings,
+                Err(e) => {
+                    eprintln!("[{addr}] boot {:08x} #{}: undecodable: {e:?}", boot.0, seq.0);
+                    continue;
+                }
+            };
+            println!(
+                "[{addr}] boot {:08x} #{}: {} reading(s)",
+                boot.0,
+                seq.0,
+                readings.len()
+            );
+            print_readings(&addr, &readings);
+
+            // >>> Plug your backend here: store `readings` (idempotently by
+            //     `time`). Call `ingested` ONLY after the store succeeded; on
+            //     failure `continue` — no ack, the firmware resends.
+            server.ingested(boot, seq, now);
+        }
+
+        if ack_req && let Some(ack) = server.ack(boot, live_for) {
+            socket.send_to(&ack, addr).await.context("UDP send ack")?;
+        }
+    }
+}
+
+/// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded v1 packet.
 async fn read_packet(
     socket: &mut TcpStream,
     cipher: &Aes128Gcm,
@@ -82,14 +188,9 @@ async fn read_packet(
         .context("packet rejected (wrong key or out-of-sync nonce?)")
 }
 
-/// Pretty-print a packet. This is the spot to replace with real persistence.
-fn print_readings(addr: &std::net::SocketAddr, packet: &[SensorData]) {
+fn print_v1_readings(addr: &SocketAddr, packet: &[SensorData]) {
     for s in packet {
-        let when = Utc
-            .timestamp_millis_opt(s.time.0 as i64)
-            .single()
-            .map(|dt| dt.with_timezone(&Local).to_string())
-            .unwrap_or_else(|| format!("{}ms", s.time.0));
+        let when = local_time(s.time);
         if let Some(b) = &s.baro {
             println!(
                 "[{addr}] {when}  P={:.1} hPa  T={:.2} °C",
@@ -106,8 +207,8 @@ fn print_readings(addr: &std::net::SocketAddr, packet: &[SensorData]) {
     }
 }
 
-async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
-    println!("[{addr}] connected");
+async fn handle_tcp_client(mut stream: TcpStream, addr: SocketAddr) {
+    println!("[{addr}] v1 TCP client connected");
     let cipher = Aes128Gcm::new(&KEY.into());
     // firmware's per-connection counter starts at 1
     let mut counter = PacketCounter::FIRST;
@@ -122,22 +223,37 @@ async fn handle_client(mut stream: TcpStream, addr: std::net::SocketAddr) {
         };
 
         println!("[{addr}] packet #{}: {} reading(s)", counter.0, packet.len());
-        print_readings(&addr, &packet);
+        print_v1_readings(&addr, &packet);
         counter = counter.next();
+    }
+}
 
-        // >>> Plug your backend here: write `packet` to a DB, a queue, a file,
-        //     forward it over gRPC, etc. The firmware doesn't care what you do.
+async fn serve_tcp(listener: TcpListener) -> anyhow::Result<()> {
+    loop {
+        let (socket, addr) = listener.accept().await?;
+        tokio::spawn(handle_tcp_client(socket, addr));
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listen = std::env::var("METEO_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
-    let listener = TcpListener::bind(&listen).await?;
-    println!("meteo example receiver listening on {listen}");
+    // Seconds of live mode to grant in every ack (0 = batches only): lets you
+    // try live mode without a frontend.
+    let live_for = match std::env::var("METEO_LIVE_SECS") {
+        Ok(v) => LiveSecs(v.parse().context("METEO_LIVE_SECS must be 0..=65535 seconds")?),
+        Err(_) => LiveSecs::OFF,
+    };
 
-    loop {
-        let (socket, addr) = listener.accept().await?;
-        tokio::spawn(handle_client(socket, addr));
+    let udp = UdpSocket::bind(&listen).await?;
+    let tcp = TcpListener::bind(&listen).await?;
+    println!(
+        "meteo example receiver on {listen}: v2 over UDP (live_for {} s), v1 over TCP",
+        live_for.0
+    );
+
+    tokio::select! {
+        res = serve_udp(udp, live_for) => res,
+        res = serve_tcp(tcp) => res,
     }
 }

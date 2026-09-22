@@ -1,42 +1,53 @@
 # example_server
 
 A minimal reference receiver for the `meteo` firmware. It shows how to accept
-the firmware's TCP stream, decrypt and decode each packet, and print the
-readings — so you can plug in whatever backend you like (database, queue,
-file, another service…).
+the firmware's data, decrypt and decode it, print the readings and
+acknowledge them — so you can plug in whatever backend you like (database,
+queue, file, another service…).
 
 ```sh
-cargo run            # listens on 0.0.0.0:1234
+cargo run                          # listens on 0.0.0.0:1234 (UDP and TCP)
 METEO_LISTEN=0.0.0.0:5000 cargo run
+METEO_LIVE_SECS=300 cargo run      # ask the firmware for live mode in every ack
 ```
 
 Point the firmware at this server's IP/port (`meteo/config.toml`,
 `server_ip`/`server_port`) and use the same 16-byte `secret_key`.
 
-## Wire protocol
+## Protocol v2 (UDP, current firmware)
 
-Each packet on the TCP stream:
+Each datagram (at most 1172 bytes, so it is never IP-fragmented):
 
 ```text
-[ u32 big-endian payload_len ][ AES-128-GCM ciphertext || 16-byte tag ]
+[ 9-byte header ][ AES-128-GCM ciphertext ][ 16-byte tag ]
 ```
 
-- `payload_len` = ciphertext length + 16 (GCM tag appended inline).
-- AES-128-GCM, 16-byte shared key (must match the firmware's `secret_key`),
-  empty associated data.
-- Nonce: 4 zero bytes + 8-byte big-endian packet counter, starting at 1 per
-  connection and incrementing per packet (the firmware resets it on reconnect).
-- Plaintext: a postcard-encoded sequence of `SensorData` (at most 24 per
-  packet). The structs and the encode/decode code live in `../meteo_core`
-  (`src/wire.rs`) and are shared with the firmware — postcard is order-based,
-  names are not sent, so both sides must use the same definition.
+- Header (big-endian, authenticated as AES-GCM associated data): `b0` —
+  version in bits 7..4, direction in bit 3, `ACK_REQ` in bit 0; then
+  `boot id + sequence number` (firmware → server) or
+  `server salt + ack number` (server → firmware). The nonce is built from
+  the header, so lost, reordered or duplicated datagrams do not affect
+  decryption.
+- Plaintext: readings in fixed point (pressure 0.01 Pa, temperatures
+  0.001 °C, humidity 0.001 %, CO2 ppm), each channel optional, delta- and
+  varint-encoded within one datagram (`meteo_core/src/codec.rs`).
+- A datagram with `ACK_REQ` is answered **after** its readings are stored:
+  the ack carries which sequence numbers of that boot are stored (a 32-bit
+  window) and how many seconds of live mode the firmware should keep (send
+  each reading immediately instead of batching every 120 s). Readings the
+  window does not confirm are resent in a new datagram, so storage must be
+  idempotent by reading time.
 
-`SensorData` is sparse: `baro` (BMP390: pressure Pa, temp °C) and `scd` (SCD41:
-CO2 ppm, humidity %, temp °C) are each `Option`, and `time` is ms since the Unix
-epoch. See `src/main.rs` for the exact structs.
+The receiver logic — verification, duplicate window, ack — is in
+`../meteo_core/src/server.rs` (feature `std`), shared with the firmware's
+own tests; `src/main.rs` is only the socket loop. To store readings, replace
+the `>>> Plug your backend here` section and call `ingested` only after the
+store succeeded.
 
-> The counter-based nonce repeats across firmware reboots — this is an
-> intentional simplification of a hobby protocol, not transport security.
+## Protocol v1 (TCP, older firmware)
 
-To build a real backend, copy this crate and replace the `>>> Plug your backend
-here` section in `src/main.rs`.
+Still accepted until old firmware is retired:
+`[ u32 BE payload_len ][ AES-128-GCM ciphertext || tag ]` per packet,
+postcard-encoded `SensorData` batch (`../meteo_core/src/wire.rs`), nonce from
+a per-connection counter. The counter restarts on every reconnect, so the
+nonce repeats — v1 is not transport security.
