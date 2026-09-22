@@ -13,6 +13,7 @@ use embassy_time::{
     Duration,
     Timer,
 };
+use embedded_io_async::Write;
 use esp_println::println;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
@@ -239,8 +240,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
             let r = write_packet(&mut socket, p, nonce_counter).await;
 
             match r {
-                Ok(g) => {
-                    println!("write ok, {} bytes", g);
+                Ok(()) => {
                     measurements_buf.clear();
                 }
                 Err(SendError::Serialize) => {
@@ -283,7 +283,7 @@ async fn write_packet(
     socket: &mut TcpSocket<'_>,
     p: &SensorBatch,
     nonce_counter: u64,
-) -> Result<usize, SendError> {
+) -> Result<(), SendError> {
     /// Длина префикса `u32 BE payload_len` перед шифротекстом.
     const LEN_PREFIX: usize = 4;
     const TAG_LEN: usize = 16;
@@ -318,5 +318,13 @@ async fn write_packet(
     body_buf[..LEN_PREFIX].copy_from_slice(&(payload_len as u32).to_be_bytes());
 
     let total_len = LEN_PREFIX + payload_len;
-    socket.write(&body_buf[..total_len]).await.map_err(SendError::Tcp)
+    // `write` кладёт в tx-буфер сколько влезло и возвращает это число: при
+    // медленных ACK хвост пакета терялся, приёмник терял фрейминг потока.
+    // `write_all` дописывает пакет целиком или возвращает ошибку.
+    socket
+        .write_all(&body_buf[..total_len])
+        .await
+        .map_err(SendError::Tcp)?;
+    println!("write ok, {} bytes", total_len);
+    Ok(())
 }
