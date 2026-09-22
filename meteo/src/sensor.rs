@@ -189,7 +189,15 @@ async fn calibrate_temp_offset(scd: &mut ScdDevice<'_>, barometer: Option<&mut B
         return;
     };
 
-    let offset_old = scd.get_temperature_offset().await.unwrap_or(4.0);
+    // Текущий offset неизвестен ⇒ новый не из чего считать: подставленное
+    // число (было `unwrap_or(4.0)`) записало бы в датчик выдуманную поправку.
+    let offset_old = match scd.get_temperature_offset().await {
+        Ok(offset) => offset,
+        Err(e) => {
+            println!("SCD41 cal: offset read error: {:?}, skipping temp offset", e);
+            return;
+        }
+    };
     // offset не может быть отрицательным (ограничение датчика).
     let offset_new = (m.temperature - t_bmp + offset_old).max(0.0);
     println!(
