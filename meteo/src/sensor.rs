@@ -266,6 +266,8 @@ pub struct SensorData {
     pub time: EpochMillis,
 }
 
+/// Очередь показаний к отправке. heapless `Queue<_, N>` вмещает N−1 элемент ⇒
+/// 59 показаний ≈ 30 мин при цикле ~30с; дальше вытесняются самые старые.
 pub static SENSOR_QUE: Mutex<CriticalSectionRawMutex, Queue<SensorData, 60>> = Mutex::new(Queue::new());
 
 async fn enqueue_sensor_data(mdata: SensorData) {

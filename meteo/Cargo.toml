@@ -36,7 +36,6 @@ sntpc-net-embassy = { version = "0.11.0", default-features = false, features = [
 ] }
 sntpc-time-embassy = { version = "0.6.0", default-features = false }
 
-embedded-hal-bus = { version = "0.3.0" }
 embedded-nal = { version = "0.9.0" }
 embedded-io = { version = "0.7.1", features = [
   # 
@@ -51,7 +50,6 @@ embedded-io-async = { version = "0.7.0", features = [
 # 1.x — та же линия, что тянет esp-hal; 0.3.100 в графе остаётся только как
 # compat-шим для чужих крейтов (embedded-io 0.6, embassy-net-driver).
 defmt = { version = "1.1.1", features = [] }
-defmt-rtt = { version = "1.3.0", features = [] }
 
 
 # package = "esp32c3-hal"
@@ -153,20 +151,6 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", br
   "esp-radio",
 ] }
 
-
-smoltcp = { version = "0.14.0", default-features = false, features = [
-  # "defmt",
-  "medium-ethernet",
-  "multicast",
-  "proto-dhcpv4",
-  "proto-dns",
-  "proto-ipv4",
-  "socket-dns",
-  "socket-icmp",
-  "socket-raw",
-  "socket-tcp",
-  "socket-udp",
-] }
 
 
 [build-dependencies]
