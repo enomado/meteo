@@ -31,7 +31,7 @@ pub const SYS_NO_TCP: u8 = 1 << 1; // 2× — нет TCP/сервера
 pub const SYS_NO_PERIPH: u8 = 1 << 2; // 3× — нет периферии (BMP390/SCD41)
 pub const SYS_NO_WIFI: u8 = 1 << 3; // 4× — нет WiFi/NTP
 // Латч-биты (не текущий статус, а «этот boot после аварийного reset»): ставятся
-// один раз на буте из RTC-маркера и НЕ гаснут до передёрга питания — чтобы факт
+// один раз на буте по причине reset и НЕ гаснут до передёрга питания — чтобы факт
 // падения был виден визуально, даже без serial. См. crate::watchdog.
 pub const SYS_PANIC_RECOVERED: u8 = 1 << 4; // 5× белым — был reset из-за паники
 pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset из-за зависания (watchdog)

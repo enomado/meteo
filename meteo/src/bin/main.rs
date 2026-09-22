@@ -57,10 +57,15 @@ async fn main(spawner: Spawner) -> ! {
 
     esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    // Причина этого boot'а из RTC-маркера: если предыдущий запуск упал в панику
-    // или завис (watchdog), latch'им LED-бит — чтобы факт аварии был виден
-    // визуально даже без serial (иначе авто-reset тихо прячет проблему).
+    // Причина этого boot'а (регистр reset reason + RTC-маркер паники): если
+    // предыдущий запуск упал в панику или завис (watchdog), latch'им LED-бит —
+    // чтобы факт аварии был виден визуально даже без serial (иначе авто-reset
+    // тихо прячет проблему).
     let boot = take_boot_fault();
+    match boot.reset_reason {
+        Some(reason) => println!("BOOT: reset reason {:?}", reason),
+        None => println!("BOOT: reset reason undocumented in esp-hal"),
+    }
     match boot.fault {
         BootFault::Panic => {
             println!(
