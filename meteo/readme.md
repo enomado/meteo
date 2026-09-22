@@ -53,17 +53,21 @@ espflash flash --monitor --chip esp32c3 --port /dev/ttyUSB0 target/riscv32imc-un
 
 ## Tests
 
-This crate builds only for riscv. Hardware-independent logic — wire format,
-LED palette, watchdog decision, WiFi choice, the packet sender state machine —
-lives in [`../meteo_core`](../meteo_core) and is tested on the host:
+This crate builds only for riscv. Hardware-independent logic — the UDP
+protocol (datagram, reading codec, receive window, sender state machine,
+receiver side), LED palette, watchdog decision, WiFi choice — lives in
+[`../meteo_core`](../meteo_core) and is tested on the host:
 
 ```sh
 cd ../meteo_core && cargo test --release
 ```
 
-The sender test is a deterministic simulation (fixed-seed proptest) of partial
-writes, connection drops and outages; it checks that no reading is lost
-without being counted as evicted from a full queue.
+The sender test is a deterministic simulation (fixed-seed proptest, virtual
+clock) of datagram loss, duplicates, reordering, socket errors, database
+outages, receiver restarts and live-mode requests, against the real receiver
+code. It checks that every reading is stored exactly as produced or counted
+as evicted from a full backlog, that no nonce repeats, and that the traffic
+per reading stays within budget.
 
 ## SPI Pinout (BMP390)
 
