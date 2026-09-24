@@ -34,6 +34,7 @@ use meteo::network::{
     connection,
     net_task,
     network_send_loop,
+    primary_network,
     station_config,
 };
 use meteo::ntp_client::ntp_sync_loop;
@@ -46,8 +47,6 @@ use meteo::watchdog::{
     watchdog_loop,
 };
 use meteo_core::supervisor::BootFault;
-
-include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -100,11 +99,11 @@ async fn main(spawner: Spawner) -> ! {
 
     // Стартовая конфигурация — основная сеть. Если сетей в конфиге несколько,
     // `connection` перед каждым коннектом сам переставит её на самую сильную по RSSI.
-    let (ssid, passwd) = WIFI_NETWORKS[0];
+    let network = primary_network();
 
     let mut controller = esp_radio::wifi::WifiController::new(
         peripherals.WIFI,
-        ControllerConfig::default().with_initial_config(station_config(ssid, passwd)),
+        ControllerConfig::default().with_initial_config(station_config(network)),
     )
     .unwrap();
 

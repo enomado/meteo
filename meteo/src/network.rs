@@ -66,6 +66,26 @@ include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 /// 20 с запасом покрывает и людное окружение — нам нужны лишь свои SSID.
 const SCAN_MAX_APS: usize = 20;
 
+fn configured_network((ssid, password): (&'static str, &'static str)) -> Network<'static> {
+    Network { ssid, password }
+}
+
+fn check_network_count() {
+    // build_helpers currently produces the primary network and at most one
+    // optional secondary network. Keep this assertion beside the fixed buffer
+    // so extending the generated configuration cannot silently drop entries.
+    assert!(
+        (1..=2).contains(&WIFI_NETWORKS.len()),
+        "firmware expects one or two configured Wi-Fi networks"
+    );
+}
+
+/// Основная сеть для начальной конфигурации радио до первого скана.
+pub fn primary_network() -> Network<'static> {
+    check_network_count();
+    configured_network(WIFI_NETWORKS[0])
+}
+
 /// Выбирает сеть из `WIFI_NETWORKS` с самым сильным сигналом (решение —
 /// `meteo_core::wifi_pick`, здесь только скан).
 ///
@@ -73,9 +93,18 @@ const SCAN_MAX_APS: usize = 20;
 /// каждый реконнект). Если скан упал или ни одного своего SSID в эфире нет —
 /// перебираем сети по кругу (`attempt`).
 async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) -> Network<'static> {
-    let fallback = *round_robin(WIFI_NETWORKS, attempt);
+    check_network_count();
+    // Build output is currently a tuple slice. Convert it once at this boundary;
+    // the core and the rest of the firmware use named credential fields.
+    let first = configured_network(WIFI_NETWORKS[0]);
+    let mut configured = [first; 2];
+    if let Some(&network) = WIFI_NETWORKS.get(1) {
+        configured[1] = configured_network(network);
+    }
+    let networks = &configured[..WIFI_NETWORKS.len()];
+    let fallback = round_robin(networks, attempt);
 
-    if WIFI_NETWORKS.len() < 2 {
+    if networks.len() < 2 {
         return fallback;
     }
 
@@ -83,37 +112,45 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
     let aps = match controller.scan_async(&scan_config).await {
         Ok(aps) => aps,
         Err(e) => {
-            println!("scan failed: {:?}, trying {}", e, fallback.0);
+            println!("scan failed: {:?}, trying {}", e, fallback.ssid);
             return fallback;
         }
     };
 
     let seen = aps.iter().map(|ap| (ap.ssid.as_str(), Rssi(ap.signal_strength)));
-    match strongest(WIFI_NETWORKS, seen) {
+    match strongest(networks, seen) {
         Some((net, rssi)) => {
-            println!("scan: picked {} (rssi {})", net.0, rssi.0);
-            *net
+            println!("scan: picked {} (rssi {})", net.ssid, rssi.0);
+            net
         }
         None => {
-            println!("scan: no configured SSID on air, trying {}", fallback.0);
+            println!("scan: no configured SSID on air, trying {}", fallback.ssid);
             fallback
         }
     }
 }
 
-/// Конфиг станции для пары (ssid, пароль) из `WIFI_NETWORKS`.
+/// Конфиг станции для сети из `WIFI_NETWORKS`.
 ///
 /// `Wpa2Personal` — ровно то, что esp-radio ставил по умолчанию, пока пароль и
 /// метод аутентификации были отдельными полями `StationConfig`.
 /// Длины SSID/пароля проверяет build-скрипт (`build_helpers::check_network`),
 /// поэтому конверсия здесь не может упасть: паника на буте свалила бы плату в
 /// бесконечный цикл reset'ов.
-pub fn station_config(ssid: &str, passwd: &str) -> Config {
+pub fn station_config(network: Network<'_>) -> Config {
     Config::Station(
         StationConfig::default()
-            .with_ssid(ssid.try_into().expect("SSID length checked at build time"))
+            .with_ssid(
+                network
+                    .ssid
+                    .try_into()
+                    .expect("SSID length checked at build time"),
+            )
             .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                passwd.try_into().expect("password length checked at build time"),
+                network
+                    .password
+                    .try_into()
+                    .expect("password length checked at build time"),
             )),
     )
 }
@@ -125,13 +162,13 @@ pub async fn connection(mut controller: WifiController<'static>) {
     loop {
         println!("About to connect...");
 
-        let (ssid, passwd) = pick_network(&mut controller, attempt).await;
+        let network = pick_network(&mut controller, attempt).await;
         attempt = attempt.wrapping_add(1);
 
-        if let Err(e) = controller.set_config(&station_config(ssid, passwd)) {
+        if let Err(e) = controller.set_config(&station_config(network)) {
             // Смена конфига не удалась — не фатально: коннектимся с тем, что уже
             // стоит в контроллере (в худшем случае это основная сеть).
-            println!("set_config({}) failed: {:?}", ssid, e);
+            println!("set_config({}) failed: {:?}", network.ssid, e);
         }
 
         match controller.connect_async().await {
