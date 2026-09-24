@@ -1,3 +1,8 @@
+#![allow(
+    clippy::future_not_send,
+    reason = "ESP32-C3 runs LED futures locally on one thread-mode Embassy executor; they are not sent between threads."
+)]
+
 use embassy_time::{
     Duration,
     Timer,
@@ -69,14 +74,14 @@ struct StatusBit {
 
 impl StatusBit {
     /// Число миганий кода. Выводится из позиции бита ⇒ инвариант
-    /// «bit_idx + 1 = число миганий» держится по построению, а не по договору.
-    fn blinks(&self) -> u32 {
+    /// «`bit_idx + 1` = число миганий» держится по построению, а не по договору.
+    const fn blinks(&self) -> u32 {
         self.mask.trailing_zeros() + 1
     }
 }
 
 /// Порядок = приоритет проигрывания (по возрастанию номера бита).
-/// SYS_NO_SERVER цвета не имеет намеренно: мигает текущим CO2-цветом, чтобы «нет
+/// `SYS_NO_SERVER` цвета не имеет намеренно: мигает текущим CO2-цветом, чтобы «нет
 /// сервера» не перекрывало индикацию воздуха.
 const STATUS_BITS: [StatusBit; 6] = [
     StatusBit {
@@ -111,7 +116,7 @@ const STATUS_BITS: [StatusBit; 6] = [
     },
 ];
 
-/// Логируем только РЕАЛЬНО изменившиеся биты: set_status зовётся в циклах
+/// Логируем только РЕАЛЬНО изменившиеся биты: `set_status` зовётся в циклах
 /// (каждый неудачный коннект), и лог «текущего состояния» захлебнулся бы.
 fn log_status_change(changed: u8, added: bool) {
     for status in &STATUS_BITS {
@@ -140,7 +145,9 @@ pub fn publish_co2(co2: u16) {
     LATEST_CO2.store(co2, Ordering::Relaxed);
 }
 
-/// Показание CO2 протухло: SCD41 не отдал измерение в этом цикле. LED уходит в
+/// Показание CO2 протухло: SCD41 не отдал измерение в этом цикле.
+///
+/// LED уходит в
 /// blink-only, пока сенсор не оживёт. Отдельный канал, а не `SYS_NO_PERIPH`:
 /// тот бит поднимает и сбой барометра, при котором CO2 остаётся живым.
 pub fn clear_co2() {
@@ -169,8 +176,12 @@ pub struct RgbPins<R, G, B> {
     pub blue:  B,
 }
 
-/// Поднимает LEDC-таймер (5 кГц, 8-bit duty, APB-clock) и собирает RgbLed на трёх каналах.
-/// Шаринг `ledc_inst`/`timer0` через mk_static (StaticCell) — функция предполагает однократный вызов.
+/// Поднимает `LEDC`-таймер (5 кГц, 8-bit duty, APB clock) и собирает `RgbLed` на трёх каналах.
+/// Шаринг `ledc_inst`/`timer0` через `mk_static` (`StaticCell`) — функция предполагает однократный вызов.
+///
+/// # Panics
+///
+/// Паникует, если конфигурация аппаратного LEDC-таймера завершится ошибкой.
 pub fn init_rgb_led<R, G, B>(ledc_per: LEDC<'static>, pins: RgbPins<R, G, B>) -> RgbLed<'static>
 where
     R: PeripheralOutput<'static>,
@@ -194,6 +205,11 @@ where
 }
 
 impl<'a> RgbLed<'a> {
+    /// Собирает `RgbLed` из трёх каналов LEDC.
+    ///
+    /// # Panics
+    ///
+    /// Паникует, если конфигурация любого канала завершится ошибкой.
     pub fn new<R, G, B>(
         ledc: &'a esp_hal::ledc::Ledc<'a>,
         timer: &'a timer::Timer<'a, LowSpeed>,
@@ -235,7 +251,7 @@ impl<'a> RgbLed<'a> {
         self.cur = color;
     }
 
-    /// Плавный переход к новому цвету за duration_ms (аппаратный fade)
+    /// Плавный переход к новому цвету за `duration_ms` (аппаратный fade).
     pub fn fade_to(&mut self, color: Rgb, duration_ms: u16) {
         if self.cur.r != color.r {
             let _ = self.r.start_duty_fade(self.cur.r, color.r, duration_ms);
@@ -269,7 +285,7 @@ impl<'a> RgbLed<'a> {
         for (color, name) in sequence {
             println!("LED test: {}", name);
             self.fade_to(color, D);
-            Timer::after(Duration::from_millis(D as u64)).await;
+            Timer::after(Duration::from_millis(u64::from(D))).await;
         }
     }
 }
@@ -277,15 +293,9 @@ impl<'a> RgbLed<'a> {
 /// Цвет конкретного blink-overlay'я. Бит без фиксированного цвета мигает текущим
 /// CO2-цветом; пока CO2 неизвестен — синим.
 fn blink_color(status: &StatusBit) -> Rgb {
-    match status.color {
-        Some(color) => color,
-        None => {
-            match latest_co2() {
-                Some(co2) => co2_to_rgb(co2),
-                None => Rgb::new(0, 0, BLINK_LEVEL),
-            }
-        }
-    }
+    status
+        .color
+        .unwrap_or_else(|| latest_co2().map_or_else(|| Rgb::new(0, 0, BLINK_LEVEL), co2_to_rgb))
 }
 
 /// Как часто проигрывать статус-оверлей (потеря связи и пр. ошибки) поверх
@@ -334,17 +344,17 @@ async fn play_co2_step(led: &mut RgbLed<'_>, co2: u16) -> u32 {
             let half = p.period_ms / 2;
             // вдох
             led.fade_to(bright, half);
-            Timer::after(Duration::from_millis(half as u64)).await;
+            Timer::after(Duration::from_millis(u64::from(half))).await;
             // выдох
             led.fade_to(dim, half);
-            Timer::after(Duration::from_millis(half as u64)).await;
-            p.period_ms as u32
+            Timer::after(Duration::from_millis(u64::from(half))).await;
+            u32::from(p.period_ms)
         }
     }
 }
 
 /// Основной LED-таск. Единое правило:
-/// - boot: startup_test (R→G→B→W→off, ~2с, async)
+/// - boot: `startup_test` (R→G→B→W→off, ~2с, async)
 /// - есть CO2-данные → CO2 mode (цвет + breathing). Раз в `OVERLAY_INTERVAL_MS`
 ///   поверх вставляется blink-overlay для всех активных ошибок.
 /// - нет свежего CO2 (SCD41 не пришёл / сбойнул в последнем цикле) → blink-only
