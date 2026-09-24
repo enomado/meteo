@@ -13,13 +13,13 @@
 //! ```
 //!
 //! - Header, big-endian, authenticated as associated data: `b0` (version in
-//!   bits 7..4, direction in bit 3, ACK_REQ in bit 0), then boot id + sequence
+//!   bits 7..4, direction in bit 3, `ACK_REQ` in bit 0), then boot id + sequence
 //!   number (firmware → server) or server salt + ack number (server → firmware).
 //!   The nonce is built from the header, so loss, reordering and duplicates do
 //!   not matter to decryption.
 //! - Plaintext: fixed-point readings, delta + varint encoded within one
 //!   datagram (`meteo_core::codec`).
-//! - Datagrams with ACK_REQ are answered with an acknowledgement *after* the
+//! - Datagrams with `ACK_REQ` are answered with an acknowledgement *after* the
 //!   readings are stored: a window of which sequence numbers of that boot are
 //!   stored, plus how long the firmware should stay in live mode (send every
 //!   reading immediately). Readings the window does not confirm are resent by
@@ -37,6 +37,7 @@
 //! (repeats on every reconnect — not transport security). Kept until old
 //! firmware is gone.
 
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -84,10 +85,13 @@ const DEFAULT_LISTEN: &str = "0.0.0.0:1234";
 const UDP_BUF: usize = 2048;
 
 fn local_time(time: EpochMillis) -> String {
-    Utc.timestamp_millis_opt(time.0 as i64)
-        .single()
-        .map(|dt| dt.with_timezone(&Local).to_string())
-        .unwrap_or_else(|| format!("{}ms", time.0))
+    i64::try_from(time.0)
+        .ok()
+        .and_then(|millis| Utc.timestamp_millis_opt(millis).single())
+        .map_or_else(
+            || format!("{}ms", time.0),
+            |dt| dt.with_timezone(&Local).to_string(),
+        )
 }
 
 /// Pretty-print v2 readings. This is the spot to replace with real persistence.
@@ -95,19 +99,19 @@ fn print_readings(addr: &SocketAddr, readings: &[Reading]) {
     for r in readings {
         let mut line = format!("[{addr}] {}", local_time(r.time));
         if let Some(p) = r.pressure {
-            line += &format!("  P={:.2} hPa", p.pascal() / 100.0);
+            write!(line, "  P={:.2} hPa", p.pascal() / 100.0).expect("String cannot fail");
         }
         if let Some(t) = r.baro_temp {
-            line += &format!("  T_baro={:.3} °C", t.celsius());
+            write!(line, "  T_baro={:.3} °C", t.celsius()).expect("String cannot fail");
         }
         if let Some(co2) = r.co2 {
-            line += &format!("  CO2={} ppm", co2.0);
+            write!(line, "  CO2={} ppm", co2.0).expect("String cannot fail");
         }
         if let Some(h) = r.humidity {
-            line += &format!("  H={:.3}%", h.percent());
+            write!(line, "  H={:.3}%", h.percent()).expect("String cannot fail");
         }
         if let Some(t) = r.scd_temp {
-            line += &format!("  T_scd={:.3} °C", t.celsius());
+            write!(line, "  T_scd={:.3} °C", t.celsius()).expect("String cannot fail");
         }
         println!("{line}");
     }

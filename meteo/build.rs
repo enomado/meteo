@@ -42,12 +42,12 @@ fn main() {
         .join(", ");
 
     let contents = format!(
-        r#"
+        r"
 pub static WIFI_NETWORKS: &[meteo_core::wifi_pick::Network<'static>] = &[{networks}];
 pub const SERVER_IP: core::net::Ipv4Addr = {ip};
 pub const SERVER_PORT: u16 = {server_port};
 pub static SECRET_KEY: [u8; 16] = [{secret}];
-"#,
+",
         networks = networks_literal,
         ip = server_ip_literal,
         server_port = fw.server_port,
@@ -62,7 +62,7 @@ pub static SECRET_KEY: [u8; 16] = [{secret}];
     }
     println!("cargo:warning=Server IP     : {}", fw.server_ip);
     println!("cargo:warning=Server PORT   : {}", fw.server_port);
-    println!("cargo:warning=Secret Key    : {:?}", fw.secret_key);
+    println!("cargo:warning=Secret Key    : <redacted>");
     println!("cargo:warning===============================");
 
     println!("cargo:rerun-if-changed=config.toml");

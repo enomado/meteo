@@ -7,6 +7,8 @@
 //! Окно = наибольший записанный `Seq` + 32 бита о предыдущих: бит `i` стоит ⇔
 //! записана датаграмма `highest − 1 − i`. Более старые номера окно не помнит.
 
+use core::cmp::Ordering;
+
 use crate::datagram::Seq;
 
 /// Сколько номеров ниже `highest` помнит окно.
@@ -34,7 +36,8 @@ pub enum SeqStatus {
 
 impl RecvWindow {
     /// Окно после записи первой датаграммы загрузки.
-    pub fn new(first: Seq) -> Self {
+    #[must_use]
+    pub const fn new(first: Seq) -> Self {
         Self {
             highest: first,
             seen:    0,
@@ -42,18 +45,22 @@ impl RecvWindow {
     }
 
     /// Окно из подтверждения (поля как на проводе).
-    pub fn from_parts(highest: Seq, seen: u32) -> Self {
+    #[must_use]
+    pub const fn from_parts(highest: Seq, seen: u32) -> Self {
         Self { highest, seen }
     }
 
-    pub fn highest(&self) -> Seq {
+    #[must_use]
+    pub const fn highest(&self) -> Seq {
         self.highest
     }
 
-    pub fn seen_bits(&self) -> u32 {
+    #[must_use]
+    pub const fn seen_bits(&self) -> u32 {
         self.seen
     }
 
+    #[must_use]
     pub fn status(&self, seq: Seq) -> SeqStatus {
         if seq == self.highest {
             return SeqStatus::Seen;
@@ -77,12 +84,12 @@ impl RecvWindow {
     pub fn mark(&mut self, seq: Seq) -> bool {
         if seq > self.highest {
             let shift = seq.0 - self.highest.0;
-            // Прежний highest встаёт на бит shift − 1, остальные едут следом;
-            // сдвиг в u64, чтобы shift = 32 не был переполнением сдвига.
-            self.seen = if shift > WINDOW_BITS {
-                0
-            } else {
-                ((u64::from(self.seen) << shift) | (1 << (shift - 1))) as u32
+            // Прежний highest встаёт на бит shift − 1, остальные едут следом.
+            // При сдвиге ровно на ширину окна остаётся только этот последний бит.
+            self.seen = match shift.cmp(&WINDOW_BITS) {
+                Ordering::Greater => 0,
+                Ordering::Equal => 1 << (WINDOW_BITS - 1),
+                Ordering::Less => (self.seen << shift) | (1 << (shift - 1)),
             };
             self.highest = seq;
             return true;

@@ -41,7 +41,7 @@ use crate::recv_window::{
 };
 
 /// Окно загрузки без датаграмм дольше этого — забывается.
-pub const BOOT_IDLE_FORGET: Duration = Duration::from_secs(24 * 3600);
+pub const BOOT_IDLE_FORGET: Duration = Duration::from_hours(24);
 
 /// Почему датаграмма не принята.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

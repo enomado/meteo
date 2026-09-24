@@ -1,11 +1,12 @@
-//! Формат пакета прошивка → приёмник. Единственное определение: прошивка
-//! кодирует, `example_server` декодирует этим же кодом (раньше структуры были
-//! скопированы в обе стороны и сверялись глазами — postcard кодирует поля по
-//! порядку объявления, без имён).
+//! Формат пакета прошивка → приёмник.
+//!
+//! Единственное определение: прошивка кодирует, `example_server` декодирует
+//! этим же кодом. Раньше структуры были скопированы в обе стороны и сверялись
+//! глазами — `postcard` кодирует поля по порядку объявления, без имён.
 //!
 //! On-wire: `[u32 BE payload_len][AES-128-GCM ciphertext][16-byte tag]`,
-//! `payload_len` = ciphertext_len + 16. Пустые associated data.
-//! Nonce (96 бит): 4 нулевых байта + 8 байт BE-счётчика пакетов соединения,
+//! `payload_len` = `ciphertext_len` + 16. Пустые `associated data`.
+//! `Nonce` (96 бит): 4 нулевых байта + 8 байт BE-счётчика пакетов соединения,
 //! первый пакет — 1.
 
 use aes_gcm::Aes128Gcm;
@@ -20,15 +21,18 @@ use serde::{
     Serialize,
 };
 
-/// Wall-clock в миллисекундах от UNIX epoch. Единица измерения — часть типа:
+/// Wall-clock в миллисекундах от UNIX epoch.
+///
+/// Единица измерения — часть типа:
 /// рядом ходят микросекунды NTP-оффсета и `Instant` с момента boot, и голый
-/// `u64` их не различал. На проводе остаётся числом: postcard сериализует
+/// `u64` их не различал. На проводе остаётся числом: `postcard` сериализует
 /// newtype прозрачно.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, MaxSize)]
 pub struct EpochMillis(pub u64);
 
-/// BMP390 одно показание — pressure (Pa) + temperature (°C). Поля всегда
-/// заполнены или отсутствуют синхронно (читаются одним вызовом).
+/// Одно показание BMP390: pressure (Pa) и temperature (°C).
+///
+/// Поля всегда заполнены или отсутствуют синхронно (читаются одним вызовом).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, MaxSize)]
 pub struct BaroReading {
     pub pressure: f32,
@@ -36,7 +40,9 @@ pub struct BaroReading {
 }
 
 /// SCD41 одно показание — CO2 (ppm), humidity (%), temperature (°C).
-/// Поля всегда заполнены или отсутствуют синхронно (один read_measurement).
+///
+/// Поля всегда заполнены или отсутствуют синхронно (один
+/// `read_measurement`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, MaxSize)]
 pub struct ScdReading {
     pub co2:      u16,
@@ -44,9 +50,11 @@ pub struct ScdReading {
     pub temp:     f32,
 }
 
-/// Одна строка измерений. `baro`/`scd` независимы (датчик может отсутствовать
-/// или не отдать данные в этом цикле). `MaxSize` держит бюджет пакета: новое
-/// поле увеличит худший размер, и сборка упадёт, если он перестанет влезать.
+/// Одна строка измерений.
+///
+/// `baro`/`scd` независимы (датчик может отсутствовать или не отдать данные в
+/// этом цикле). `MaxSize` держит бюджет пакета: новое поле увеличит худший
+/// размер, и сборка упадёт, если он перестанет влезать.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, MaxSize)]
 pub struct SensorData {
     pub baro: Option<BaroReading>,
@@ -87,10 +95,21 @@ pub type PacketBuf = [u8; BUF_LEN];
 pub struct PacketCounter(pub u64);
 
 impl PacketCounter {
-    pub const FIRST: PacketCounter = PacketCounter(1);
+    pub const FIRST: Self = Self(1);
 
-    pub fn next(self) -> PacketCounter {
-        PacketCounter(self.0 + 1)
+    /// Возвращает следующий номер пакета.
+    ///
+    /// # Panics
+    ///
+    /// Паникует, если счётчик достиг `u64::MAX`; в пределах одного соединения
+    /// номер пакета не должен переполняться.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("PacketCounter overflow: 2^64 packets in one connection"),
+        )
     }
 
     /// 4 нулевых байта + 8 байт BE-счётчика. ВНИМАНИЕ: счётчик обнуляется на
@@ -104,8 +123,14 @@ impl PacketCounter {
     }
 }
 
-/// Кодирует батч в пакет в `buf` (шифрование in-place, без heap), возвращает
-/// длину пакета — `&buf[..len]` уходит в сокет целиком.
+/// Кодирует батч в пакет в `buf` (шифрование in-place, без heap).
+///
+/// Возвращает длину пакета — `&buf[..len]` уходит в сокет целиком.
+///
+/// # Panics
+///
+/// Паникует, если сериализованная длина превышает compile-time бюджет пакета
+/// или если AES-GCM отклоняет допустимый размер plaintext.
 pub fn encode_packet(
     cipher: &Aes128Gcm,
     counter: PacketCounter,
@@ -142,8 +167,15 @@ pub enum PacketError {
     Decode(postcard::Error),
 }
 
-/// Длина payload по префиксу. Проверяется ДО чтения payload, чтобы битый
-/// префикс не заставил приёмник читать/аллоцировать мегабайты.
+/// Длина payload по префиксу.
+///
+/// Проверяется до чтения payload, чтобы битый префикс не заставил приёмник
+/// читать/аллоцировать мегабайты.
+///
+/// # Errors
+///
+/// Возвращает [`PacketError::LengthOutOfRange`], если длина меньше tag или
+/// больше максимального payload.
 pub fn payload_len(prefix: [u8; LEN_PREFIX]) -> Result<usize, PacketError> {
     let len = u32::from_be_bytes(prefix) as usize;
     if (TAG_LEN..=MAX_PAYLOAD_LEN).contains(&len) {
@@ -154,6 +186,17 @@ pub fn payload_len(prefix: [u8; LEN_PREFIX]) -> Result<usize, PacketError> {
 }
 
 /// Расшифровывает payload (шифротекст + tag) на месте и разбирает батч.
+///
+/// # Errors
+///
+/// Возвращает [`PacketError::LengthOutOfRange`] для payload неверной длины,
+/// [`PacketError::Decrypt`] при ошибке аутентификации и
+/// [`PacketError::Decode`] при ошибке декодирования батча.
+///
+/// # Panics
+///
+/// Не паникует: длина tag проверена ограничением `payload.len() >= TAG_LEN`
+/// перед разбиением среза.
 pub fn decode_payload(
     cipher: &Aes128Gcm,
     counter: PacketCounter,

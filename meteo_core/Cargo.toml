@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[lints.clippy]
+# Keep stricter review rules enabled in regular `cargo clippy` runs. Individual
+# casts and embedded-specific async patterns still need local justification.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
 # Логика прошивки без железа: протокол (датаграмма, кодек, окно приёма,
 # отправитель), LED-палитра, решение watchdog, выбор сети. `no_std`, без
 # esp-зависимостей ⇒ тесты идут на хосте (`cargo test` в этой директории):

@@ -4,6 +4,10 @@ name = "meteo"
 # rust-version = "1.89"
 version = "0.1.0"
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
 [[bin]]
 name = "meteo"
 path = "./src/bin/main.rs"

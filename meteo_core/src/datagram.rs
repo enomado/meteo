@@ -54,14 +54,22 @@ pub struct BootId(pub u32);
 pub struct Seq(pub u32);
 
 impl Seq {
-    pub const FIRST: Seq = Seq(1);
+    pub const FIRST: Self = Self(1);
 
-    pub fn next(self) -> Seq {
+    /// Возвращает следующий номер датаграммы.
+    ///
+    /// # Panics
+    ///
+    /// Паникует, если номер уже равен `u32::MAX`: счётчик нельзя оборачивать,
+    /// поскольку повторное использование nonce нарушило бы безопасность AES-GCM.
+    #[must_use]
+    pub const fn next(self) -> Self {
         // 2³² датаграмм — 136 лет при одной в секунду.
-        Seq(self
-            .0
-            .checked_add(1)
-            .expect("Seq overflow: 2^32 datagrams in one boot"))
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("Seq overflow: 2^32 datagrams in one boot"),
+        )
     }
 }
 
@@ -74,10 +82,17 @@ pub struct ServerSalt(pub u32);
 pub struct AckSeq(pub u32);
 
 impl AckSeq {
-    pub const FIRST: AckSeq = AckSeq(1);
+    pub const FIRST: Self = Self(1);
 
-    pub fn next(self) -> AckSeq {
-        AckSeq(
+    /// Возвращает следующий номер подтверждения.
+    ///
+    /// # Panics
+    ///
+    /// Паникует при `u32::MAX`: оборачивание повторно использовало бы nonce
+    /// подтверждения в пределах одного процесса.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(
             self.0
                 .checked_add(1)
                 .expect("AckSeq overflow: 2^32 acks in one process"),
@@ -90,7 +105,7 @@ impl AckSeq {
 pub struct LiveSecs(pub u16);
 
 impl LiveSecs {
-    pub const OFF: LiveSecs = LiveSecs(0);
+    pub const OFF: Self = Self(0);
 }
 
 /// Заголовок датаграммы прошивка → сервер.
@@ -115,38 +130,55 @@ pub enum Header {
     Down(DownHeader),
 }
 
+/// Сырые поля `id` и счётчика, общие для обеих разновидностей заголовка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NonceParts {
+    id:      u32,
+    counter: u32,
+}
+
 impl Header {
-    fn b0(&self) -> u8 {
+    const fn b0(&self) -> u8 {
         let version = VERSION << VERSION_SHIFT;
         match self {
-            Header::Up(h) => version | if h.ack_req { ACK_REQ_BIT } else { 0 },
-            Header::Down(_) => version | DOWN_BIT,
+            Self::Up(h) => version | if h.ack_req { ACK_REQ_BIT } else { 0 },
+            Self::Down(_) => version | DOWN_BIT,
         }
     }
 
-    /// `(id, счётчик)` — вторая и третья части nonce.
-    fn id_counter(&self) -> (u32, u32) {
+    /// Вторая и третья части nonce.
+    const fn id_counter(&self) -> NonceParts {
         match self {
-            Header::Up(h) => (h.boot.0, h.seq.0),
-            Header::Down(h) => (h.salt.0, h.ack_seq.0),
+            Self::Up(h) => {
+                NonceParts {
+                    id:      h.boot.0,
+                    counter: h.seq.0,
+                }
+            }
+            Self::Down(h) => {
+                NonceParts {
+                    id:      h.salt.0,
+                    counter: h.ack_seq.0,
+                }
+            }
         }
     }
 
     fn to_bytes(self) -> [u8; HEADER_LEN] {
-        let (id, counter) = self.id_counter();
+        let parts = self.id_counter();
         let mut bytes = [0u8; HEADER_LEN];
         bytes[0] = self.b0();
-        bytes[1..5].copy_from_slice(&id.to_be_bytes());
-        bytes[5..9].copy_from_slice(&counter.to_be_bytes());
+        bytes[1..5].copy_from_slice(&parts.id.to_be_bytes());
+        bytes[5..9].copy_from_slice(&parts.counter.to_be_bytes());
         bytes
     }
 
     fn nonce(&self) -> Nonce<Aes128Gcm> {
-        let (id, counter) = self.id_counter();
+        let parts = self.id_counter();
         let mut bytes = [0u8; 12];
         bytes[0] = self.b0() & DOWN_BIT;
-        bytes[4..8].copy_from_slice(&id.to_be_bytes());
-        bytes[8..12].copy_from_slice(&counter.to_be_bytes());
+        bytes[4..8].copy_from_slice(&parts.id.to_be_bytes());
+        bytes[8..12].copy_from_slice(&parts.counter.to_be_bytes());
         Nonce::<Aes128Gcm>::from(bytes)
     }
 }
@@ -168,6 +200,18 @@ pub enum DatagramError {
 
 /// Разбор заголовка без расшифровки (тег ещё не проверен — доверять
 /// содержимому нельзя; нужен тестам и логам).
+///
+/// # Errors
+///
+/// Возвращает [`DatagramError::Length`], если датаграмма короче заголовка с
+/// тегом или длиннее `MAX_DATAGRAM`, и [`DatagramError::BadHeader`] при
+/// неподдерживаемой версии, зарезервированных битах или недопустимом `ACK_REQ`.
+///
+/// # Panics
+///
+/// Внутреннее чтение 4-байтовых полей опирается на проверку длины выше: до
+/// чтения каждого поля уже подтверждено, что датаграмма содержит все 9 байт
+/// заголовка.
 pub fn parse_header(datagram: &[u8]) -> Result<Header, DatagramError> {
     if !(HEADER_LEN + TAG_LEN..=MAX_DATAGRAM).contains(&datagram.len()) {
         return Err(DatagramError::Length(datagram.len()));
@@ -204,6 +248,13 @@ pub fn plain_area(buf: &mut DatagramBuf) -> &mut [u8] {
 /// Собирает датаграмму в `buf`: открытый текст уже лежит в
 /// `buf[HEADER_LEN..HEADER_LEN + plain_len]` (см. [`plain_area`]). Пишет
 /// заголовок, шифрует на месте, дописывает тег; возвращает длину датаграммы.
+///
+/// # Panics
+///
+/// Паникует, если `plain_len` приводит к переполнению при расчёте длины либо
+/// рассчитанная датаграмма не помещается в `buf` или превышает `MAX_DATAGRAM`.
+/// Шифрование также ожидаемо не может превысить лимит длины AES-GCM, поскольку
+/// допустимый размер датаграммы существенно меньше него.
 pub fn seal(cipher: &Aes128Gcm, header: Header, buf: &mut [u8], plain_len: usize) -> usize {
     let plain_end = HEADER_LEN + plain_len;
     let len = plain_end + TAG_LEN;
@@ -222,6 +273,17 @@ pub fn seal(cipher: &Aes128Gcm, header: Header, buf: &mut [u8], plain_len: usize
 
 /// Проверяет и расшифровывает датаграмму на месте; возвращает заголовок и
 /// открытый текст (срез внутри `datagram`).
+///
+/// # Errors
+///
+/// Возвращает ошибку длины или заголовка из [`parse_header`], либо
+/// [`DatagramError::Decrypt`], если тег не прошёл проверку.
+///
+/// # Panics
+///
+/// После успешного [`parse_header`] длина гарантирует наличие заголовка и
+/// полного тега; преобразование среза тега и разделение заголовка поэтому
+/// соответствуют уже проверенным границам.
 pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<(Header, &'a [u8]), DatagramError> {
     let header = parse_header(datagram)?;
     let tag_at = datagram.len() - TAG_LEN;
@@ -235,6 +297,12 @@ pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<(Header, &
 }
 
 /// [`open`] для приёмника: принимает только направление прошивка → сервер.
+///
+/// # Errors
+///
+/// Передаёт ошибки разбора и расшифровки из [`open`], а для корректного
+/// заголовка направления сервер → прошивка возвращает
+/// [`DatagramError::WrongDirection`].
 pub fn open_up<'a>(
     cipher: &Aes128Gcm,
     datagram: &'a mut [u8],
@@ -246,6 +314,12 @@ pub fn open_up<'a>(
 }
 
 /// [`open`] для прошивки: только подтверждение сервера.
+///
+/// # Errors
+///
+/// Передаёт ошибки разбора и расшифровки из [`open`], ошибку декодирования
+/// подтверждения из [`Ack::from_bytes`] либо [`DatagramError::WrongDirection`]
+/// для направления прошивка → сервер.
 pub fn open_ack(cipher: &Aes128Gcm, datagram: &mut [u8]) -> Result<(DownHeader, Ack), DatagramError> {
     match open(cipher, datagram)? {
         (Header::Down(h), plain) => Ok((h, Ack::from_bytes(plain)?)),
@@ -269,6 +343,7 @@ pub struct Ack {
 
 impl Ack {
     /// `boot ‖ highest ‖ seen ‖ live_for`, всё BE.
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; ACK_LEN] {
         let mut bytes = [0u8; ACK_LEN];
         bytes[0..4].copy_from_slice(&self.boot.0.to_be_bytes());
@@ -278,12 +353,23 @@ impl Ack {
         bytes
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Ack, DatagramError> {
+    /// Декодирует подтверждение из его фиксированного 14-байтового тела.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`DatagramError::AckLength`], если длина входа не равна
+    /// [`ACK_LEN`].
+    ///
+    /// # Panics
+    ///
+    /// После проверки длины четыре байта каждого слова гарантированно лежат
+    /// внутри массива; преобразование среза не может завершиться ошибкой.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DatagramError> {
         let bytes: &[u8; ACK_LEN] = bytes
             .try_into()
             .map_err(|_| DatagramError::AckLength(bytes.len()))?;
         let word = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().expect("4-byte slice"));
-        Ok(Ack {
+        Ok(Self {
             boot:     BootId(word(0)),
             window:   RecvWindow::from_parts(Seq(word(4)), word(8)),
             live_for: LiveSecs(u16::from_be_bytes([bytes[12], bytes[13]])),
@@ -291,6 +377,7 @@ impl Ack {
     }
 
     /// Готовая датаграмма подтверждения.
+    #[must_use]
     pub fn seal(&self, cipher: &Aes128Gcm, header: DownHeader) -> [u8; ACK_DATAGRAM_LEN] {
         let mut buf = [0u8; ACK_DATAGRAM_LEN];
         buf[HEADER_LEN..HEADER_LEN + ACK_LEN].copy_from_slice(&self.to_bytes());

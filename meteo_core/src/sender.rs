@@ -77,13 +77,14 @@ struct Slot {
     state:   SlotState,
 }
 
-/// Хранилище показаний отправителя (~80 КБ при `BACKLOG` = 1440). Отдельный
-/// тип с `const fn new`: прошивка держит его в `static`, собранном при
-/// компиляции, — значение такого размера, созданное в рантайме, прошло бы
-/// через стек MCU.
+/// Хранилище показаний отправителя (около 80 КБ при `BACKLOG` = 1440).
+///
+/// Прошивка держит его в `static`, собранном при компиляции: создание такого
+/// значения в рантайме прошло бы через стек MCU.
 pub struct Backlog(heapless::Vec<Slot, BACKLOG>);
 
 impl Backlog {
+    #[must_use]
     pub const fn new() -> Self {
         Self(heapless::Vec::new())
     }
@@ -146,7 +147,7 @@ pub struct Sender<'b> {
 impl<'b> Sender<'b> {
     /// Показания, уже лежащие в `backlog`, считаются неотправленными.
     pub fn new(cipher: Aes128Gcm, boot: BootId, now: Uptime, backlog: &'b mut Backlog) -> Self {
-        for slot in backlog.0.iter_mut() {
+        for slot in &mut backlog.0 {
             slot.state = SlotState::Pending;
         }
         Self {
@@ -165,22 +166,31 @@ impl<'b> Sender<'b> {
         }
     }
 
-    pub fn mode(&self) -> Mode {
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
         self.mode
     }
 
     /// Показаний в бэклоге (ждут отправки или подтверждения).
+    #[must_use]
     pub fn backlog_len(&self) -> usize {
         self.backlog.len()
     }
 
     /// `false` — последний запрос подтверждения остался без ответа.
-    pub fn server_reachable(&self) -> bool {
+    #[must_use]
+    pub const fn server_reachable(&self) -> bool {
         self.reachable
     }
 
     /// Новое показание. Бэклог полон ⇒ вытесняется самое старое и
     /// возвращается: потеря учтена, а не проглочена.
+    ///
+    /// # Panics
+    ///
+    /// Паникует, если `push` не добавил запись. При корректной ёмкости это
+    /// внутренний инвариант: когда бэклог полон, перед `push` удаляется
+    /// старейшая запись.
     pub fn on_reading(&mut self, reading: Reading) -> Option<Reading> {
         let evicted = self.backlog.is_full().then(|| self.backlog.remove(0).reading);
         self.backlog
@@ -193,6 +203,12 @@ impl<'b> Sender<'b> {
     }
 
     /// Датаграмма с адреса сервера (расшифровка на месте).
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`AckError::Datagram`], если длина, заголовок, направление,
+    /// тег или размер подтверждения недопустимы. Возвращает
+    /// [`AckError::ForeignBoot`], если подтверждение адресовано другой загрузке.
     pub fn on_datagram(&mut self, datagram: &mut [u8], now: Uptime) -> Result<(), AckError> {
         let (_, ack) = open_ack(&self.cipher, datagram).map_err(AckError::Datagram)?;
         if ack.boot != self.boot {
@@ -247,6 +263,7 @@ impl<'b> Sender<'b> {
     /// Когда разбудить автомат (таймаут подтверждения, конец паузы, конец
     /// живого режима, очередной батч). `None` — ждать нечего, только показаний
     /// и датаграмм.
+    #[must_use]
     pub fn deadline(&self) -> Option<Uptime> {
         let batch = (self.mode == Mode::Batch
             && self.awaiting.is_none()

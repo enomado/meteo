@@ -53,6 +53,16 @@ fn worst_reading_is_exactly_reading_max() {
 }
 
 #[test]
+fn zigzag_handles_i64_minimum_delta() {
+    let a = full(u64::MAX / 2, 0, 0);
+    let b = full(0, 0, 0);
+    let (plain, taken) = encode(&[a, b], PLAIN_CAPACITY);
+
+    assert_eq!(taken, 2);
+    assert_eq!(decode_all(&plain), Ok(vec![a, b]));
+}
+
+#[test]
 fn greedy_fill_stops_before_overflow() {
     let worst: Vec<Reading> = (0..200)
         .map(|i| {

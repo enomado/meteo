@@ -39,16 +39,24 @@ fn scaled(value: f32, scale: f64) -> Option<i32> {
     let v = libm::round(f64::from(value) * scale);
     (f64::from(i32::MIN)..=f64::from(i32::MAX))
         .contains(&v)
-        .then_some(v as i32)
+        .then_some({
+            // Диапазон проверен выше, поэтому усечения здесь быть не может.
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                v as i32
+            }
+        })
 }
 
 impl CentiPascal {
     const PER_PASCAL: f64 = 100.0;
 
+    #[must_use]
     pub fn from_pascal(pa: f32) -> Option<Self> {
         scaled(pa, Self::PER_PASCAL).map(Self)
     }
 
+    #[must_use]
     pub fn pascal(self) -> f64 {
         f64::from(self.0) / Self::PER_PASCAL
     }
@@ -57,10 +65,12 @@ impl CentiPascal {
 impl MilliCelsius {
     const PER_CELSIUS: f64 = 1000.0;
 
+    #[must_use]
     pub fn from_celsius(c: f32) -> Option<Self> {
         scaled(c, Self::PER_CELSIUS).map(Self)
     }
 
+    #[must_use]
     pub fn celsius(self) -> f64 {
         f64::from(self.0) / Self::PER_CELSIUS
     }
@@ -69,10 +79,12 @@ impl MilliCelsius {
 impl MilliPercentRh {
     const PER_PERCENT: f64 = 1000.0;
 
+    #[must_use]
     pub fn from_percent(rh: f32) -> Option<Self> {
         scaled(rh, Self::PER_PERCENT).map(Self)
     }
 
+    #[must_use]
     pub fn percent(self) -> f64 {
         f64::from(self.0) / Self::PER_PERCENT
     }
@@ -97,6 +109,7 @@ const RESERVED_PRESENCE: u8 = !((1 << CHANNELS) - 1);
 
 impl Reading {
     /// Есть ли хоть один канал. Пустое показание прошивка в очередь не кладёт.
+    #[must_use]
     pub fn has_any_channel(&self) -> bool {
         self.channels().iter().any(Option::is_some)
     }
@@ -129,11 +142,11 @@ impl Reading {
 }
 
 const fn zigzag(v: i64) -> u64 {
-    ((v << 1) ^ (v >> 63)) as u64
+    (v.wrapping_shl(1) ^ (v >> 63)).cast_unsigned()
 }
 
 const fn unzigzag(v: u64) -> i64 {
-    ((v >> 1) as i64) ^ -((v & 1) as i64)
+    (v >> 1).cast_signed() ^ -((v & 1).cast_signed())
 }
 
 /// Длина LEB128-varint для `v`.
@@ -174,6 +187,12 @@ pub struct Encoder<'a> {
 
 impl<'a> Encoder<'a> {
     /// `base` — время первого показания датаграммы (его `dt` тогда 0).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `buf` is too small to encode at least one worst-case
+    /// reading.
+    #[must_use]
     pub fn new(buf: &'a mut [u8], base: EpochMillis) -> Self {
         assert!(
             buf.len() >= MIN_PLAIN,
@@ -191,7 +210,8 @@ impl<'a> Encoder<'a> {
     }
 
     /// Длина открытого текста.
-    pub fn plain_len(&self) -> usize {
+    #[must_use]
+    pub const fn plain_len(&self) -> usize {
         self.len
     }
 
@@ -212,7 +232,11 @@ impl<'a> Encoder<'a> {
 
         // Разность u64 в дополнительном коде: декодер делает wrapping_add ⇒
         // точный обратный путь для любых двух времён.
-        let dt = (r.time.0 as i64).wrapping_sub(self.prev_time.0 as i64);
+        let dt = r
+            .time
+            .0
+            .cast_signed()
+            .wrapping_sub(self.prev_time.0.cast_signed());
         self.put_varint(zigzag(dt));
         self.prev_time = r.time;
 
@@ -228,11 +252,11 @@ impl<'a> Encoder<'a> {
     fn put_varint(&mut self, mut v: u64) {
         // Место проверено до записи (`new` / `push` под READING_MAX).
         while v >= 0x80 {
-            self.buf[self.len] = (v as u8) | 0x80;
+            self.buf[self.len] = u8::try_from(v & 0x7f).expect("varint byte is at most 7 bits") | 0x80;
             self.len += 1;
             v >>= 7;
         }
-        self.buf[self.len] = v as u8;
+        self.buf[self.len] = u8::try_from(v & 0x7f).expect("varint byte is at most 7 bits");
         self.len += 1;
     }
 }
@@ -261,6 +285,10 @@ pub struct Readings<'a> {
 }
 
 /// Начать разбор открытого текста: читает `base_time`.
+///
+/// # Errors
+///
+/// Возвращает `CodecError::Truncated`, если в тексте нет полного `base_time`.
 pub fn decode(plain: &[u8]) -> Result<Readings<'_>, CodecError> {
     let mut rest = plain;
     let base = take_varint(&mut rest)?;
@@ -298,7 +326,7 @@ impl Readings<'_> {
             return Err(CodecError::ReservedPresence(presence));
         }
         let dt = unzigzag(take_varint(&mut self.rest)?);
-        let time = EpochMillis((self.prev_time.0 as i64).wrapping_add(dt) as u64);
+        let time = EpochMillis(self.prev_time.0.cast_signed().wrapping_add(dt).cast_unsigned());
         self.prev_time = time;
 
         let mut channels = [None; CHANNELS];

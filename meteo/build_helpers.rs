@@ -66,7 +66,8 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     // let server_ip: IpAddr = server_ip_str.parse().expect("invalid IP");
     let server_ip: Ipv4Addr = server_ip_str.parse().expect("no server_ip");
 
-    let server_port = fw["server_port"].as_integer().expect("no server_port") as u16;
+    let server_port = u16::try_from(fw["server_port"].as_integer().expect("no server_port"))
+        .expect("server_port must fit in u16");
 
     let secret_key_hex = fw["secret_key"].as_str().expect("no secret_key");
     let secret_key = hex_to_u8_16(secret_key_hex);
@@ -78,17 +79,13 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     FirmwareConfig {
         wifi_networks,
         server_ip,
-        secret_key,
         server_port,
+        secret_key,
     }
 }
 
 pub fn secret_literal(secret: &[u8; 16]) -> String {
-    secret
-        .iter()
-        .map(|b| b.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    secret.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")
 }
 
 pub fn wifi_network_literal(network: &FirmwareWifiNetwork) -> String {
@@ -99,9 +96,7 @@ pub fn wifi_network_literal(network: &FirmwareWifiNetwork) -> String {
 }
 
 pub fn hex_to_u8_16(hex: &str) -> [u8; 16] {
-    if hex.len() != 32 {
-        panic!("SECRET_KEY HEX must be 32 chars = 16 bytes");
-    }
+    assert_eq!(hex.len(), 32, "SECRET_KEY HEX must be 32 chars = 16 bytes");
 
     let mut bytes = [0u8; 16];
     for i in 0..16 {

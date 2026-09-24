@@ -15,13 +15,17 @@ pub struct Rgb {
 impl Rgb {
     pub const OFF: Rgb = Rgb::new(0, 0, 0);
 
+    #[must_use]
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
 
     /// Затемнение до `pct` процентов от текущей яркости (100 = без изменений).
+    #[must_use]
     pub fn scaled(self, pct: u8) -> Self {
-        let s = |c: u8| ((c as u16 * pct as u16) / 100) as u8;
+        let s = |c: u8| {
+            u8::try_from((u16::from(c) * u16::from(pct)) / 100).expect("percentage scaling stays within u8")
+        };
         Self::new(s(self.r), s(self.g), s(self.b))
     }
 }
@@ -32,12 +36,18 @@ pub const CO2_MAX_LEVEL: u8 = 30;
 
 /// Линейная интерполяция в u8: a→b по t∈[0,1].
 fn lerp(a: f32, b: f32, t: f32) -> u8 {
-    (a + (b - a) * t) as u8
+    let value = a + (b - a) * t;
+    debug_assert!((0.0..=f32::from(u8::MAX)).contains(&value));
+    // All call sites pass a t in [0, 1] and endpoints in the u8 range.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u8
+    }
 }
 
 /// Параметр t∈[0,1] для co2 в отрезке [lo, hi]. Предусловие: lo ≤ co2 ≤ hi.
 fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
-    ((co2 - lo) as f32) / ((hi - lo) as f32)
+    f32::from(co2 - lo) / f32::from(hi - lo)
 }
 
 /// CO2 ppm → цвет, яркость в долях `CO2_MAX_LEVEL`.
@@ -48,9 +58,10 @@ fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
 /// - 700-1000: жёлтый → оранжевый
 /// - 1000-1500: оранжевый → красный (тут включается breathing pulse)
 /// - 1500+: чистый красный
+#[must_use]
 pub fn co2_to_rgb(co2: u16) -> Rgb {
     const MAX: u8 = CO2_MAX_LEVEL;
-    let m = MAX as f32;
+    let m = f32::from(MAX);
 
     match co2 {
         0..=400 => Rgb::new(0, MAX, 0),
@@ -75,6 +86,7 @@ pub struct PulseSpec {
 
 /// CO2 → параметры пульса. `None` = статичный цвет (нормальная атмосфера).
 /// Чем выше CO2, тем быстрее и глубже дыхание.
+#[must_use]
 pub fn pulse_params(co2: u16) -> Option<PulseSpec> {
     match co2 {
         0..=999 => None,
