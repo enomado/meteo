@@ -108,7 +108,13 @@ impl Rng {
     }
 
     fn step(&mut self, spread: i64) -> i64 {
-        self.below(2 * spread as u64 + 1) as i64 - spread
+        let spread = u64::try_from(spread).expect("spread must be nonnegative");
+        let range = spread
+            .checked_mul(2)
+            .and_then(|width| width.checked_add(1))
+            .expect("spread range must fit u64");
+        let offset = i64::try_from(self.below(range)).expect("offset must fit i64");
+        offset - i64::try_from(spread).expect("spread must fit i64")
     }
 }
 
