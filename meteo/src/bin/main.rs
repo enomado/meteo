@@ -2,7 +2,10 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_net::StackResources;
+use embassy_net::{
+    DhcpConfig,
+    StackResources,
+};
 use embassy_time::{
     Duration,
     Timer,
@@ -50,6 +53,7 @@ use meteo::watchdog::{
 use meteo_core::supervisor::BootFault;
 
 #[esp_rtos::main]
+#[allow(clippy::future_not_send)]
 async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::default());
 
@@ -62,9 +66,10 @@ async fn main(spawner: Spawner) -> ! {
     // чтобы факт аварии был виден визуально даже без serial (иначе авто-reset
     // тихо прячет проблему).
     let boot = take_boot_fault();
-    match boot.reset_reason {
-        Some(reason) => println!("BOOT: reset reason {:?}", reason),
-        None => println!("BOOT: reset reason undocumented in esp-hal"),
+    if let Some(reason) = boot.reset_reason {
+        println!("BOOT: reset reason {:?}", reason);
+    } else {
+        println!("BOOT: reset reason undocumented in esp-hal");
     }
     match boot.fault {
         BootFault::Panic => {
@@ -116,9 +121,9 @@ async fn main(spawner: Spawner) -> ! {
 
     let wifi_interface = esp_radio::wifi::Interface::station();
 
-    let net_config = embassy_net::Config::dhcpv4(Default::default());
+    let net_config = embassy_net::Config::dhcpv4(DhcpConfig::default());
 
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let seed = (u64::from(rng.random()) << 32) | u64::from(rng.random());
 
     let (stack, runner) = embassy_net::new(
         wifi_interface,

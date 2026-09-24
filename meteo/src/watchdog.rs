@@ -7,11 +7,11 @@
 //!
 //! 1. **`custom_halt`** (фича esp-backtrace `custom-halt`) — вместо вечного
 //!    loop{} после паники делаем `software_reset()`. Бэктрейс печатается ДО
-//!    (esp-backtrace: pre_backtrace → печать → abort → custom_halt), поэтому
+//!    (`esp-backtrace`: `pre_backtrace` → печать → abort → `custom_halt`), поэтому
 //!    defmt-лог паники успевает уйти в UART. Покрывает ВСЕ паники.
 //!
-//! 2. **RWDT hardware watchdog** — ловит НАСТОЯЩИЕ зависания (await, который
-//!    никогда не резолвится в beta esp-radio; interrupt storm; столл executor'а),
+//! 2. **RWDT hardware watchdog** — ловит НАСТОЯЩИЕ зависания (`await`, который
+//!    никогда не резолвится в beta-версии `esp-radio`; шторм прерываний; столл executor'а),
 //!    которые паникой НЕ являются, поэтому `custom_halt` их не видит. Кормится
 //!    только пока критичные таски (sensor + network) реально крутят свои циклы.
 //!
@@ -104,7 +104,7 @@ static RTC_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Сводит причину reset ESP32-C3 к классу, по которому решает `classify`.
 /// `match` исчерпывающий: новая причина в esp-hal не соберётся молча.
-fn reset_kind(reason: Option<SocResetReason>) -> ResetKind {
+const fn reset_kind(reason: Option<SocResetReason>) -> ResetKind {
     let Some(reason) = reason else {
         return ResetKind::Other;
     };
@@ -178,12 +178,13 @@ extern "Rust" fn custom_halt() -> ! {
 const FEED_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Hardware-таймаут RWDT Stage0 (действие по умолчанию = reset системы). Должен
-/// быть > FEED_INTERVAL с большим запасом (иначе ложный ресет при джиттере
+/// быть > `FEED_INTERVAL` с большим запасом (иначе ложный ресет при джиттере
 /// executor'а). 120с: после того как feeder ПЕРЕСТАЛ кормить (детект столла),
 /// железо ресетит в пределах 120с.
 const RWDT_TIMEOUT_SECS: u64 = 120;
 
 /// Время с boot по часам embassy (им же живут надзор и отправитель).
+#[must_use]
 pub fn uptime() -> Uptime {
     Uptime(core::time::Duration::from_micros(Instant::now().as_micros()))
 }

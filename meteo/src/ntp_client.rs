@@ -1,3 +1,6 @@
+// These NTP futures use Embassy's !Send Stack on one executor; that is expected here.
+#![allow(clippy::future_not_send)]
+
 use core::net::{
     IpAddr,
     SocketAddr,
@@ -36,15 +39,15 @@ const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
 const NTP_RETRY_DELAY: Duration = Duration::from_secs(5);
 const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
 
-/// Смещение от локальных часов к wall-clock, в МИКРОсекундах: так его отдаёт
+/// Смещение от локальных часов к системному времени, в микросекундах: так его отдаёт
 /// `NtpResult::offset()`, а `EmbassyTimestampGenerator` считает «системным
-/// временем» `Instant` с момента boot ⇒ offset == wall-clock на буте.
+/// временем» `Instant` с момента boot ⇒ offset соответствует UTC при запуске.
 /// Атомик (не `Mutex` + `unsafe lock_mut`): значение скалярное, читается из
 /// sensor-таски, пишется из ntp-таски.
 static CURRENT_OFFSET_US: AtomicI64 = AtomicI64::new(DEFAULT_OFFSET_US);
 
-/// Baked-in значение до первого успешного NTP-синка: 2025-09-16 01:31 UTC.
-/// Показания с таким временем в серверный буфер НЕ попадают (sensor_loop ждёт
+/// Вшитое значение до первого успешного NTP-синка: 2025-09-16 01:31 UTC.
+/// Показания с таким временем в серверный буфер НЕ попадают (`sensor_loop` ждёт
 /// `CLOCK_IS_SYNCED_WATCH`), оно нужно лишь чтобы часы вообще были монотонны.
 const DEFAULT_OFFSET_US: i64 = 1_757_986_271_840_363;
 
@@ -54,7 +57,7 @@ pub fn now_epoch() -> EpochMillis {
     EpochMillis(apply_offset(since_boot_ms, offset_ms))
 }
 
-fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
+const fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
     if offset_ms >= 0 {
         since_boot_ms.saturating_add(offset_ms.unsigned_abs())
     } else {
@@ -62,7 +65,7 @@ fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
     }
 }
 
-async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
+async fn ntp_sync(stack: Stack<'_>) -> Option<NtpResult> {
     // Create UDP socket
     let mut rx_meta = [PacketMetadata::EMPTY; 16];
     let mut rx_buffer = [0; 4096];
@@ -119,12 +122,9 @@ pub static CLOCK_IS_SYNCED_WATCH: Watch<CriticalSectionRawMutex, bool, 2> = Watc
 async fn try_sync(stack: Stack<'_>) -> bool {
     println!("checking time");
 
-    let res = match with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack)).await {
-        Ok(inner) => inner,
-        Err(_) => {
-            println!("ntp: timeout!");
-            return false;
-        }
+    let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack)).await else {
+        println!("ntp: timeout!");
+        return false;
     };
 
     let Some(pp) = res else { return false };
