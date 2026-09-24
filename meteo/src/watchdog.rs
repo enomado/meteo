@@ -187,11 +187,16 @@ pub fn uptime() -> Uptime {
     Uptime(core::time::Duration::from_micros(Instant::now().as_micros()))
 }
 
-fn heartbeats() -> (Heartbeat, Heartbeat) {
-    (
-        Heartbeat(SENSOR_HB.load(Ordering::Relaxed)),
-        Heartbeat(NET_HB.load(Ordering::Relaxed)),
-    )
+struct TaskHeartbeats {
+    sensor:  Heartbeat,
+    network: Heartbeat,
+}
+
+fn heartbeats() -> TaskHeartbeats {
+    TaskHeartbeats {
+        sensor:  Heartbeat(SENSOR_HB.load(Ordering::Relaxed)),
+        network: Heartbeat(NET_HB.load(Ordering::Relaxed)),
+    }
 }
 
 /// Кормит RWDT по вердикту `Supervisor` (лимиты, boot-grace, оживление — там
@@ -203,14 +208,14 @@ pub async fn watchdog_loop(mut rwdt: Rwdt) {
     rwdt.enable();
     println!("watchdog: RWDT armed, hw timeout {}s", RWDT_TIMEOUT_SECS);
 
-    let (sensor, net) = heartbeats();
-    let mut supervisor = Supervisor::new(uptime(), sensor, net);
+    let initial_heartbeats = heartbeats();
+    let mut supervisor = Supervisor::new(uptime(), initial_heartbeats.sensor, initial_heartbeats.network);
 
     loop {
         Timer::after(FEED_INTERVAL).await;
 
-        let (sensor, net) = heartbeats();
-        match supervisor.tick(uptime(), sensor, net) {
+        let current_heartbeats = heartbeats();
+        match supervisor.tick(uptime(), current_heartbeats.sensor, current_heartbeats.network) {
             Verdict::Feed => rwdt.feed(),
             Verdict::Withhold { sensor_ok, net_ok } => {
                 // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет
