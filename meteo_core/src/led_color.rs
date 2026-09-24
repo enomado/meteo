@@ -22,16 +22,20 @@ impl Rgb {
         Self { r, g, b }
     }
 
-    /// Затемнение до `pct` процентов от текущей яркости (100 = без изменений).
+    /// Масштабирует яркость на `pct` процентов (0 = выключено, 100 = без
+    /// изменений). Значения выше 100 ограничиваются до 100, поэтому
+    /// результат не ярче исходного канала. Компоненты `Rgb` выше 100 остаются
+    /// выше 100 и при масштабировании на 100.
     ///
     /// # Panics
     ///
-    /// This function cannot panic: the result of scaling a `u8` by a percentage
-    /// from 0 to 255 and dividing by 100 always fits in a `u8`.
+    /// This function cannot panic: after clamping `pct`, the scaled channel
+    /// value is no greater than its original `u8` value.
     #[must_use]
     pub fn scaled(self, pct: u8) -> Self {
+        let pct = pct.min(100);
         let s = |c: u8| {
-            u8::try_from((u16::from(c) * u16::from(pct)) / 100).expect("percentage scaling stays within u8")
+            u8::try_from((u16::from(c) * u16::from(pct)) / 100).expect("scaled brightness stays within u8")
         };
         Self::new(s(self.r), s(self.g), s(self.b))
     }
