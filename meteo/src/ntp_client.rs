@@ -51,9 +51,15 @@ const DEFAULT_OFFSET_US: i64 = 1_757_986_271_840_363;
 pub fn now_epoch() -> EpochMillis {
     let since_boot_ms = Instant::now().as_millis();
     let offset_ms = CURRENT_OFFSET_US.load(Ordering::Relaxed) / 1000;
-    // wrapping: при вменяемом оффсете переполнения нет, но паника здесь морозила
-    // бы чип (см. crate::watchdog) — цена битого таймстампа несопоставима.
-    EpochMillis(since_boot_ms.wrapping_add(offset_ms as u64))
+    EpochMillis(apply_offset(since_boot_ms, offset_ms))
+}
+
+fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
+    if offset_ms >= 0 {
+        since_boot_ms.saturating_add(offset_ms as u64)
+    } else {
+        since_boot_ms.saturating_sub(offset_ms.unsigned_abs())
+    }
 }
 
 async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
@@ -145,5 +151,21 @@ pub async fn ntp_sync_loop(stack: Stack<'static>) {
     loop {
         Timer::after(NTP_RESYNC_INTERVAL).await;
         let _ = try_sync(stack).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_offset;
+
+    #[test]
+    fn applies_negative_offset_as_subtraction() {
+        assert_eq!(apply_offset(10_000, -250), 9_750);
+    }
+
+    #[test]
+    fn saturates_offsets_outside_epoch_range() {
+        assert_eq!(apply_offset(10, -11), 0);
+        assert_eq!(apply_offset(u64::MAX - 1, i64::MAX), u64::MAX);
     }
 }
