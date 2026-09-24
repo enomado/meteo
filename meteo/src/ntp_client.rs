@@ -66,11 +66,20 @@ async fn ntp_sync<'a>(stack: Stack<'a>) -> Option<NtpResult> {
     let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
     // Порт 0 ⇒ embassy-net выдаёт динамический. Исходящий порт 123 режут
     // некоторые провайдеры, а серверу он не нужен: ответ идёт на порт запроса.
-    socket.bind(0).ok()?;
+    if let Err(error) = socket.bind(0) {
+        println!("ntp: UDP bind failed: {:?}", error);
+        return None;
+    }
 
     let context = NtpContext::new(EmbassyTimestampGenerator::default());
 
-    let ntp_addrs = stack.dns_query(NTP_SERVER, DnsQueryType::A).await.ok()?;
+    let ntp_addrs = match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
+        Ok(addrs) => addrs,
+        Err(error) => {
+            println!("ntp: DNS query for {} failed: {:?}", NTP_SERVER, error);
+            return None;
+        }
+    };
 
     if ntp_addrs.is_empty() {
         println!("Failed to resolve DNS");
