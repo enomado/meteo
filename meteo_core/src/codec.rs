@@ -2,7 +2,7 @@
 //!
 //! Открытый текст датаграммы: `base_time` (varint), затем показания до конца
 //! (счётчика нет). Показание: байт присутствия (биты 0–4 — pressure,
-//! baro_temp, co2, humidity, scd_temp; биты 5–7 = 0), `dt` мс от предыдущего
+//! `baro_temp`, `co2`, `humidity`, `scd_temp`; биты 5–7 = 0), `dt` мс от предыдущего
 //! показания (первое — от `base_time`; zigzag varint, время после
 //! пересинхронизации NTP может идти назад), затем для каждого присутствующего
 //! канала — zigzag varint дельта от предыдущего присутствующего значения
@@ -125,12 +125,12 @@ impl Reading {
         ]
     }
 
-    fn from_channels(time: EpochMillis, ch: [Option<i64>; CHANNELS]) -> Result<Reading, CodecError> {
+    fn from_channels(time: EpochMillis, ch: [Option<i64>; CHANNELS]) -> Result<Self, CodecError> {
         fn narrow<T: TryFrom<i64>>(v: Option<i64>) -> Result<Option<T>, CodecError> {
             v.map(|v| T::try_from(v).map_err(|_| CodecError::OutOfRange))
                 .transpose()
         }
-        Ok(Reading {
+        Ok(Self {
             time,
             pressure: narrow(ch[0])?.map(CentiPascal),
             baro_temp: narrow(ch[1])?.map(MilliCelsius),

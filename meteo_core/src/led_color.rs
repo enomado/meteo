@@ -2,9 +2,11 @@
 //! только применяет результат к каналам.
 
 /// Яркость канала в процентах (0..=100) — ровно то, что принимает LEDC
-/// `set_duty`. Держим триплет одной структурой: три параллельных `u8`
-/// (cur_r/cur_g/cur_b плюс кортежи в таблицах цветов) слишком легко разъезжаются
-/// и путаются местами.
+/// `set_duty`.
+///
+/// Держим триплет одной структурой: три параллельных `u8`
+/// (`cur_r`/`cur_g`/`cur_b` плюс кортежи в таблицах цветов) слишком легко
+/// разъезжаются и путаются местами.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Rgb {
     pub r: u8,
@@ -13,7 +15,7 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    pub const OFF: Rgb = Rgb::new(0, 0, 0);
+    pub const OFF: Self = Self::new(0, 0, 0);
 
     #[must_use]
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
@@ -21,6 +23,11 @@ impl Rgb {
     }
 
     /// Затемнение до `pct` процентов от текущей яркости (100 = без изменений).
+    ///
+    /// # Panics
+    ///
+    /// This function cannot panic: the result of scaling a `u8` by a percentage
+    /// from 0 to 255 and dividing by 100 always fits in a `u8`.
     #[must_use]
     pub fn scaled(self, pct: u8) -> Self {
         let s = |c: u8| {
@@ -87,7 +94,7 @@ pub struct PulseSpec {
 /// CO2 → параметры пульса. `None` = статичный цвет (нормальная атмосфера).
 /// Чем выше CO2, тем быстрее и глубже дыхание.
 #[must_use]
-pub fn pulse_params(co2: u16) -> Option<PulseSpec> {
+pub const fn pulse_params(co2: u16) -> Option<PulseSpec> {
     match co2 {
         0..=999 => None,
         1000..=1399 => {
