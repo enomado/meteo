@@ -8,6 +8,7 @@ use crate::build_helpers::{
     ipv4_literal,
     parse_config,
     secret_literal,
+    wifi_network_literal,
 };
 
 mod build_helpers;
@@ -31,18 +32,18 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest_path = out_dir.join("constants.rs");
 
-    // Слайс (ssid, passwd) в порядке из конфига: [0] — основная сеть, [1] — wifi2.
+    // Сети в порядке из конфига: [0] — основная сеть, [1] — wifi2.
     // Прошивка сама выбирает между ними по RSSI, порядок здесь — только fallback.
     let networks_literal = fw
         .wifi_networks
         .iter()
-        .map(|(ssid, passwd)| format!("(\"{ssid}\", \"{passwd}\")"))
+        .map(wifi_network_literal)
         .collect::<Vec<_>>()
         .join(", ");
 
     let contents = format!(
         r#"
-pub static WIFI_NETWORKS: &[(&str, &str)] = &[{networks}];
+pub static WIFI_NETWORKS: &[meteo_core::wifi_pick::Network<'static>] = &[{networks}];
 pub const SERVER_IP: core::net::Ipv4Addr = {ip};
 pub const SERVER_PORT: u16 = {server_port};
 pub static SECRET_KEY: [u8; 16] = [{secret}];
@@ -56,8 +57,8 @@ pub static SECRET_KEY: [u8; 16] = [{secret}];
     fs::write(&dest_path, contents).unwrap();
 
     println!("cargo:warning==== Firmware build parameters ===");
-    for (i, (ssid, passwd)) in fw.wifi_networks.iter().enumerate() {
-        println!("cargo:warning=WiFi #{}        : {} / {}", i + 1, ssid, passwd);
+    for (i, network) in fw.wifi_networks.iter().enumerate() {
+        println!("cargo:warning=WiFi #{}        : {}", i + 1, network.ssid);
     }
     println!("cargo:warning=Server IP     : {}", fw.server_ip);
     println!("cargo:warning=Server PORT   : {}", fw.server_port);
