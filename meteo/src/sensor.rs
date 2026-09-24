@@ -1,3 +1,10 @@
+// ESP32-C3 использует один Embassy executor; futures датчиков не мигрируют
+// между потоками, поэтому аппаратные драйверы могут оставаться !Send.
+#![allow(
+    clippy::future_not_send,
+    reason = "аппаратные futures датчиков исполняются одним ESP32-C3 Embassy executor"
+)]
+
 use bmp390_rs::register::int_status::IntStatus;
 use bmp390_rs::{
     Bmp390,
@@ -126,7 +133,7 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
         Timer::after(Duration::from_secs(1)).await;
         match scd.data_ready().await {
             Ok(true) => return true,
-            Ok(false) => continue,
+            Ok(false) => {}
             Err(e) => {
                 println!("SCD41: data_ready error: {:?}", e);
                 return false;
@@ -137,7 +144,7 @@ async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
     false
 }
 
-/// Один замер SCD41: single-shot → ожидание data_ready → чтение.
+/// Один замер SCD41: single-shot → ожидание `data_ready` → чтение.
 /// `None` — замер в этом цикле не удался (причина уже в логе); вызывающий
 /// гасит CO2 на LED и поднимает `SYS_NO_PERIPH`.
 async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdSample> {
@@ -198,8 +205,8 @@ fn scd_ambient_pressure_hpa(pressure_pa: f32) -> Option<u16> {
     Some(ambient_hpa)
 }
 
-/// Один опрос BMP390: статус drdy → чтение. Ошибки шины логируются здесь,
-/// решение (ретрай / пропуск цикла / SYS_NO_PERIPH) принимает вызывающий.
+/// Один опрос BMP390: статус `drdy` → чтение. Ошибки шины логируются здесь,
+/// решение (ретрай / пропуск цикла / `SYS_NO_PERIPH`) принимает вызывающий.
 async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> BaroPoll {
     match barometer.read::<IntStatus>().await {
         Ok(status) if !status.drdy => BaroPoll::NotReady,
