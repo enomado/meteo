@@ -84,6 +84,20 @@ struct BootState {
     last_heard: Duration,
 }
 
+impl BootState {
+    fn ingested(&mut self, seq: Seq, now: Duration) {
+        self.last_heard = now;
+        match &mut self.window {
+            Some(w) => {
+                // Ниже окна отметить нечем: прошивка сочтёт номер неизвестным
+                // и переотправит показания под новым — запись идемпотентна.
+                w.mark(seq);
+            }
+            None => self.window = Some(RecvWindow::new(seq)),
+        }
+    }
+}
+
 pub struct Server {
     cipher:   Aes128Gcm,
     salt:     ServerSalt,
@@ -146,15 +160,7 @@ impl Server {
             window:     None,
             last_heard: now,
         });
-        state.last_heard = now;
-        match &mut state.window {
-            Some(w) => {
-                // Ниже окна отметить нечем: прошивка сочтёт номер неизвестным
-                // и переотправит показания под новым — запись идемпотентна.
-                w.mark(seq);
-            }
-            None => state.window = Some(RecvWindow::new(seq)),
-        }
+        state.ingested(seq, now);
     }
 
     /// Подтверждение для загрузки `boot`. `None` — от неё ещё ничего не
