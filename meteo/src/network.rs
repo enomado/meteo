@@ -264,7 +264,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 
         let idle_end = Instant::now() + MAX_IDLE;
         let wake = sender.deadline().map_or(idle_end, |d| {
-            idle_end.min(Instant::from_micros(d.0.as_micros() as u64))
+            u64::try_from(d.0.as_micros()).map_or(idle_end, |deadline_micros| {
+                idle_end.min(Instant::from_micros(deadline_micros))
+            })
         });
         match with_deadline(wake, socket.recv_from(&mut incoming)).await {
             Ok(Ok((len, meta))) if meta.endpoint == server => {
