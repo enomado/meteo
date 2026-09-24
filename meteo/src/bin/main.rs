@@ -23,6 +23,7 @@ use esp_rtos as _;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 use meteo::led::{
+    RgbPins,
     SYS_PANIC_RECOVERED,
     SYS_WDT_RECOVERED,
     init_rgb_led,
@@ -132,9 +133,11 @@ async fn main(spawner: Spawner) -> ! {
     // --- RGB LED (LEDC PWM) на GPIO3=R, GPIO4=G, GPIO5=B ---
     let rgb_led = init_rgb_led(
         peripherals.LEDC,
-        peripherals.GPIO3,
-        peripherals.GPIO4,
-        peripherals.GPIO5,
+        RgbPins {
+            red:   peripherals.GPIO3,
+            green: peripherals.GPIO4,
+            blue:  peripherals.GPIO5,
+        },
     );
     spawner.spawn(led_loop(rgb_led).unwrap());
 

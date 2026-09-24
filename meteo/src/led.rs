@@ -162,14 +162,21 @@ pub struct RgbLed<'a> {
     cur: Rgb,
 }
 
+/// GPIO outputs wired to the red, green, and blue LED channels.
+pub struct RgbPins<R, G, B> {
+    pub red:   R,
+    pub green: G,
+    pub blue:  B,
+}
+
 /// Поднимает LEDC-таймер (5 кГц, 8-bit duty, APB-clock) и собирает RgbLed на трёх каналах.
 /// Шаринг `ledc_inst`/`timer0` через mk_static (StaticCell) — функция предполагает однократный вызов.
-pub fn init_rgb_led(
-    ledc_per: LEDC<'static>,
-    r_pin: impl PeripheralOutput<'static>,
-    g_pin: impl PeripheralOutput<'static>,
-    b_pin: impl PeripheralOutput<'static>,
-) -> RgbLed<'static> {
+pub fn init_rgb_led<R, G, B>(ledc_per: LEDC<'static>, pins: RgbPins<R, G, B>) -> RgbLed<'static>
+where
+    R: PeripheralOutput<'static>,
+    G: PeripheralOutput<'static>,
+    B: PeripheralOutput<'static>,
+{
     let ledc_inst = crate::mk_static!(ledc::Ledc<'static>, ledc::Ledc::new(ledc_per));
     ledc_inst.set_global_slow_clock(LSGlobalClkSource::APBClk);
 
@@ -183,30 +190,33 @@ pub fn init_rgb_led(
         .unwrap();
     let timer0 = crate::mk_static!(timer::Timer<'static, LowSpeed>, timer0);
 
-    RgbLed::new(ledc_inst, timer0, r_pin, g_pin, b_pin)
+    RgbLed::new(ledc_inst, timer0, pins)
 }
 
 impl<'a> RgbLed<'a> {
-    pub fn new(
+    pub fn new<R, G, B>(
         ledc: &'a esp_hal::ledc::Ledc<'a>,
         timer: &'a timer::Timer<'a, LowSpeed>,
-        r_pin: impl PeripheralOutput<'a>,
-        g_pin: impl PeripheralOutput<'a>,
-        b_pin: impl PeripheralOutput<'a>,
-    ) -> Self {
+        pins: RgbPins<R, G, B>,
+    ) -> Self
+    where
+        R: PeripheralOutput<'a>,
+        G: PeripheralOutput<'a>,
+        B: PeripheralOutput<'a>,
+    {
         let ch_config = channel::config::Config {
             timer,
             duty_pct: 0,
             drive_mode: DriveMode::PushPull,
         };
 
-        let mut r = ledc.channel(channel::Number::Channel0, r_pin);
+        let mut r = ledc.channel(channel::Number::Channel0, pins.red);
         r.configure(ch_config).unwrap();
 
-        let mut g = ledc.channel(channel::Number::Channel1, g_pin);
+        let mut g = ledc.channel(channel::Number::Channel1, pins.green);
         g.configure(ch_config).unwrap();
 
-        let mut b = ledc.channel(channel::Number::Channel2, b_pin);
+        let mut b = ledc.channel(channel::Number::Channel2, pins.blue);
         b.configure(ch_config).unwrap();
 
         Self {
