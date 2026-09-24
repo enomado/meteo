@@ -56,7 +56,7 @@ pub fn now_epoch() -> EpochMillis {
 
 fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
     if offset_ms >= 0 {
-        since_boot_ms.saturating_add(offset_ms as u64)
+        since_boot_ms.saturating_add(offset_ms.unsigned_abs())
     } else {
         since_boot_ms.saturating_sub(offset_ms.unsigned_abs())
     }
