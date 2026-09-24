@@ -192,7 +192,7 @@ fn scd_ambient_pressure_hpa(pressure_pa: f32) -> Option<u16> {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "после проверки pressure_pa / 100 ограничено целыми значениями 700..=1200"
+        reason = "после проверки конечного диапазона результат в 700..=1200 гПа, дробная часть намеренно отбрасывается"
     )]
     let ambient_hpa = (pressure_pa / 100.0) as u16;
     Some(ambient_hpa)
