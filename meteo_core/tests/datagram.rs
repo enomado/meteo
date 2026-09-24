@@ -156,7 +156,7 @@ fn reserved_and_foreign_header_bits_are_rejected() {
         );
     }
     // ACK_REQ определён только для прошивки.
-    let mut dg = clean.clone();
+    let mut dg = clean;
     dg[0] = 0x19;
     assert_eq!(parse_header(&dg), Err(DatagramError::BadHeader(0x19)));
 }
