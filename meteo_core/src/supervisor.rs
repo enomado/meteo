@@ -16,6 +16,13 @@ pub struct Uptime(pub Duration);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Heartbeat(pub u32);
 
+/// Heartbeats for the tasks monitored by [`Supervisor`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TaskHeartbeats {
+    pub sensor:  Heartbeat,
+    pub network: Heartbeat,
+}
+
 /// Максимальный НОРМАЛЬНЫЙ простой heartbeat'а sensor-таски: период ~30с (25с
 /// сон + ≤10с ожидания SCD41) → 90с = 3× запас.
 pub const SENSOR_STALL_LIMIT: Duration = Duration::from_secs(90);
@@ -73,17 +80,17 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// `sensor`/`net` — значения heartbeat'ов в момент старта надзора.
-    pub fn new(now: Uptime, sensor: Heartbeat, net: Heartbeat) -> Self {
+    /// Значения heartbeat'ов в момент старта надзора.
+    pub fn new(now: Uptime, heartbeats: TaskHeartbeats) -> Self {
         Self {
-            sensor: Liveness::new(SENSOR_STALL_LIMIT, now, sensor),
-            net:    Liveness::new(NET_STALL_LIMIT, now, net),
+            sensor: Liveness::new(SENSOR_STALL_LIMIT, now, heartbeats.sensor),
+            net:    Liveness::new(NET_STALL_LIMIT, now, heartbeats.network),
         }
     }
 
-    pub fn tick(&mut self, now: Uptime, sensor: Heartbeat, net: Heartbeat) -> Verdict {
-        let sensor_ok = self.sensor.observe(now, sensor);
-        let net_ok = self.net.observe(now, net);
+    pub fn tick(&mut self, now: Uptime, heartbeats: TaskHeartbeats) -> Verdict {
+        let sensor_ok = self.sensor.observe(now, heartbeats.sensor);
+        let net_ok = self.net.observe(now, heartbeats.network);
         if sensor_ok && net_ok {
             Verdict::Feed
         } else {

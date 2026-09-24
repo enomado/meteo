@@ -35,6 +35,7 @@ use meteo_core::supervisor::{
     Heartbeat,
     ResetKind,
     Supervisor,
+    TaskHeartbeats,
     Uptime,
     Verdict,
     classify,
@@ -187,11 +188,6 @@ pub fn uptime() -> Uptime {
     Uptime(core::time::Duration::from_micros(Instant::now().as_micros()))
 }
 
-struct TaskHeartbeats {
-    sensor:  Heartbeat,
-    network: Heartbeat,
-}
-
 fn heartbeats() -> TaskHeartbeats {
     TaskHeartbeats {
         sensor:  Heartbeat(SENSOR_HB.load(Ordering::Relaxed)),
@@ -209,13 +205,13 @@ pub async fn watchdog_loop(mut rwdt: Rwdt) {
     println!("watchdog: RWDT armed, hw timeout {}s", RWDT_TIMEOUT_SECS);
 
     let initial_heartbeats = heartbeats();
-    let mut supervisor = Supervisor::new(uptime(), initial_heartbeats.sensor, initial_heartbeats.network);
+    let mut supervisor = Supervisor::new(uptime(), initial_heartbeats);
 
     loop {
         Timer::after(FEED_INTERVAL).await;
 
         let current_heartbeats = heartbeats();
-        match supervisor.tick(uptime(), current_heartbeats.sensor, current_heartbeats.network) {
+        match supervisor.tick(uptime(), current_heartbeats) {
             Verdict::Feed => rwdt.feed(),
             Verdict::Withhold { sensor_ok, net_ok } => {
                 // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет
