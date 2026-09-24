@@ -66,10 +66,6 @@ include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 /// 20 с запасом покрывает и людное окружение — нам нужны лишь свои SSID.
 const SCAN_MAX_APS: usize = 20;
 
-fn configured_network((ssid, password): (&'static str, &'static str)) -> Network<'static> {
-    Network { ssid, password }
-}
-
 fn check_network_count() {
     // build_helpers currently produces the primary network and at most one
     // optional secondary network. Keep this assertion beside the fixed buffer
@@ -83,7 +79,7 @@ fn check_network_count() {
 /// Основная сеть для начальной конфигурации радио до первого скана.
 pub fn primary_network() -> Network<'static> {
     check_network_count();
-    configured_network(WIFI_NETWORKS[0])
+    WIFI_NETWORKS[0]
 }
 
 /// Выбирает сеть из `WIFI_NETWORKS` с самым сильным сигналом (решение —
@@ -96,10 +92,10 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
     check_network_count();
     // Build output is currently a tuple slice. Convert it once at this boundary;
     // the core and the rest of the firmware use named credential fields.
-    let first = configured_network(WIFI_NETWORKS[0]);
+    let first = WIFI_NETWORKS[0];
     let mut configured = [first; 2];
     if let Some(&network) = WIFI_NETWORKS.get(1) {
-        configured[1] = configured_network(network);
+        configured[1] = network;
     }
     let networks = &configured[..WIFI_NETWORKS.len()];
     let fallback = round_robin(networks, attempt);
@@ -119,9 +115,9 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
 
     let seen = aps.iter().map(|ap| (ap.ssid.as_str(), Rssi(ap.signal_strength)));
     match strongest(networks, seen) {
-        Some((net, rssi)) => {
-            println!("scan: picked {} (rssi {})", net.ssid, rssi.0);
-            net
+        Some(pick) => {
+            println!("scan: picked {} (rssi {})", pick.network.ssid, pick.rssi.0);
+            pick.network
         }
         None => {
             println!("scan: no configured SSID on air, trying {}", fallback.ssid);

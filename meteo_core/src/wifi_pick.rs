@@ -14,6 +14,13 @@ pub struct Network<'n> {
     pub password: &'n str,
 }
 
+/// Настроенная сеть и сигнал сильнейшей найденной для неё точки доступа.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NetworkSignal<'n> {
+    pub network: Network<'n>,
+    pub rssi:    Rssi,
+}
+
 /// Настроенная сеть с самым сильным сигналом среди увиденных точек доступа.
 /// Чужие SSID игнорируются; у сети с несколькими AP берётся сильнейшая. При
 /// равном сигнале побеждает увиденная первой (скан сортирует по RSSI).
@@ -21,14 +28,14 @@ pub struct Network<'n> {
 pub fn strongest<'n, 's>(
     networks: &[Network<'n>],
     seen: impl IntoIterator<Item = (&'s str, Rssi)>,
-) -> Option<(Network<'n>, Rssi)> {
-    let mut best: Option<(Network<'n>, Rssi)> = None;
+) -> Option<NetworkSignal<'n>> {
+    let mut best: Option<NetworkSignal<'n>> = None;
     for (ssid, rssi) in seen {
         let Some(net) = networks.iter().find(|network| network.ssid == ssid) else {
             continue;
         };
-        if best.is_none_or(|(_, best_rssi)| rssi > best_rssi) {
-            best = Some((*net, rssi));
+        if best.is_none_or(|best| rssi > best.rssi) {
+            best = Some(NetworkSignal { network: *net, rssi });
         }
     }
     best
