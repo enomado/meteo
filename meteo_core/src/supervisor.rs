@@ -43,7 +43,7 @@ struct Liveness {
 }
 
 impl Liveness {
-    fn new(limit: Duration, now: Uptime, hb: Heartbeat) -> Self {
+    const fn new(limit: Duration, now: Uptime, hb: Heartbeat) -> Self {
         Self {
             limit,
             seen: hb,
@@ -81,13 +81,15 @@ pub struct Supervisor {
 
 impl Supervisor {
     /// Значения heartbeat'ов в момент старта надзора.
-    pub fn new(now: Uptime, heartbeats: TaskHeartbeats) -> Self {
+    #[must_use]
+    pub const fn new(now: Uptime, heartbeats: TaskHeartbeats) -> Self {
         Self {
             sensor: Liveness::new(SENSOR_STALL_LIMIT, now, heartbeats.sensor),
             net:    Liveness::new(NET_STALL_LIMIT, now, heartbeats.network),
         }
     }
 
+    #[must_use]
     pub fn tick(&mut self, now: Uptime, heartbeats: TaskHeartbeats) -> Verdict {
         let sensor_ok = self.sensor.observe(now, heartbeats.sensor);
         let net_ok = self.net.observe(now, heartbeats.network);
@@ -126,10 +128,13 @@ pub enum ResetKind {
     Other,
 }
 
-/// Причина boot'а по классу reset и RTC-маркеру паники. Маркер нужен только
-/// для паники: по железу она неотличима от штатного программного reset.
-/// Столл по маркеру не определить — вставший executor его не запишет.
-pub fn classify(kind: ResetKind, panic_marked: bool) -> BootFault {
+/// Причина boot'а по классу reset и RTC-маркеру паники.
+///
+/// Маркер нужен только для паники: по железу она неотличима от штатного
+/// программного reset. Столл по маркеру не определить — вставший executor его
+/// не запишет.
+#[must_use]
+pub const fn classify(kind: ResetKind, panic_marked: bool) -> BootFault {
     match kind {
         ResetKind::RtcWatchdog => BootFault::WdtStall,
         ResetKind::Software if panic_marked => BootFault::Panic,

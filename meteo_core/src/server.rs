@@ -66,6 +66,11 @@ pub struct Incoming<'a> {
 impl Incoming<'_> {
     /// Все показания или первая ошибка разбора: частично записанная
     /// датаграмма была бы хуже отвергнутой целиком.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`ServerError::Codec`], если хотя бы одно показание
+    /// не удалось разобрать.
     pub fn collect_readings(self) -> Result<Vec<Reading>, ServerError> {
         self.readings
             .collect::<Result<_, _>>()
@@ -89,6 +94,7 @@ pub struct Server {
 impl Server {
     /// `salt` — случайный u32 на каждый старт процесса (половина nonce
     /// подтверждений; повтор соли = повтор nonce).
+    #[must_use]
     pub fn new(cipher: Aes128Gcm, salt: ServerSalt) -> Self {
         Self {
             cipher,
@@ -99,30 +105,36 @@ impl Server {
     }
 
     /// Проверить датаграмму (расшифровка на месте) и отдать её показания.
+    ///
+    /// # Errors
+    ///
+    /// Возвращает [`ServerError::Datagram`], если датаграмма не проходит
+    /// проверку подлинности или структуры, и [`ServerError::Codec`], если
+    /// её показания не разбираются.
     pub fn receive<'a>(
         &mut self,
         datagram: &'a mut [u8],
         now: Duration,
     ) -> Result<Incoming<'a>, ServerError> {
-        let (header, plain) = open_up(&self.cipher, datagram).map_err(ServerError::Datagram)?;
-        let readings = decode(plain).map_err(ServerError::Codec)?;
+        let uplink = open_up(&self.cipher, datagram).map_err(ServerError::Datagram)?;
+        let readings = decode(uplink.plaintext).map_err(ServerError::Codec)?;
 
         // Только подлинные датаграммы продлевают жизнь окнам.
         self.boots
             .retain(|_, b| now.saturating_sub(b.last_heard) < BOOT_IDLE_FORGET);
-        let state = self.boots.entry(header.boot).or_insert(BootState {
+        let state = self.boots.entry(uplink.header.boot).or_insert(BootState {
             window:     None,
             last_heard: now,
         });
         state.last_heard = now;
         let duplicate = state
             .window
-            .is_some_and(|w| w.status(header.seq) == SeqStatus::Seen);
+            .is_some_and(|w| w.status(uplink.header.seq) == SeqStatus::Seen);
 
         Ok(Incoming {
-            boot: header.boot,
-            seq: header.seq,
-            ack_req: header.ack_req,
+            boot: uplink.header.boot,
+            seq: uplink.header.seq,
+            ack_req: uplink.header.ack_req,
             duplicate,
             readings,
         })
@@ -175,6 +187,7 @@ pub struct LiveLease {
 }
 
 impl LiveLease {
+    #[must_use]
     pub const fn new() -> Self {
         Self { until: None }
     }
@@ -186,6 +199,7 @@ impl LiveLease {
     }
 
     /// Остаток срока в целых секундах (вниз: прошивка не переживёт срок).
+    #[must_use]
     pub fn remaining(&self, now: Duration) -> LiveSecs {
         let left = self.until.map_or(Duration::ZERO, |u| u.saturating_sub(now));
         LiveSecs(u16::try_from(left.as_secs()).unwrap_or(u16::MAX))

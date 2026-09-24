@@ -38,7 +38,9 @@ fn reading(t: u64) -> Reading {
         time:      EpochMillis(t),
         pressure:  None,
         baro_temp: None,
-        co2:       Some(Ppm(400 + t as u16)),
+        co2:       Some(Ppm(
+            400 + u16::try_from(t).expect("test timestamps fit the CO2 field")
+        )),
         humidity:  None,
         scd_temp:  None,
     }
@@ -88,7 +90,9 @@ fn ack_reports_ingested_window_and_duplicates_are_detected() {
     assert!(server.receive(&mut dg, T0).unwrap().duplicate);
 
     let mut ack = server.ack(BootId(5), LiveSecs(42)).unwrap();
-    let (header, ack) = open_ack(&cipher(), &mut ack).unwrap();
+    let opened = open_ack(&cipher(), &mut ack).unwrap();
+    let header = opened.header;
+    let ack = opened.ack;
     assert_eq!(header.salt, ServerSalt(9));
     assert_eq!(ack.boot, BootId(5));
     assert_eq!(ack.live_for, LiveSecs(42));
@@ -98,7 +102,7 @@ fn ack_reports_ingested_window_and_duplicates_are_detected() {
 
     // Номера подтверждений растут: nonce не повторяется.
     let mut next = server.ack(BootId(5), LiveSecs::OFF).unwrap();
-    assert!(open_ack(&cipher(), &mut next).unwrap().0.ack_seq > header.ack_seq);
+    assert!(open_ack(&cipher(), &mut next).unwrap().header.ack_seq > header.ack_seq);
 }
 
 #[test]
@@ -139,7 +143,7 @@ fn live_lease() {
         LiveSecs(199)
     );
     // Более ранний запрос срок не укорачивает.
-    lease.request(T0 - Duration::from_secs(1), lease_len);
+    lease.request(T0.checked_sub(Duration::from_secs(1)).unwrap(), lease_len);
     assert_eq!(lease.remaining(T0), LiveSecs(300));
     assert_eq!(lease.remaining(T0 + lease_len), LiveSecs::OFF);
 }

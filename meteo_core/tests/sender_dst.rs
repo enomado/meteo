@@ -87,7 +87,7 @@ const HEAL_LIMIT: u64 = 48 * HOUR;
 const EPOCH_BASE: u64 = 1_758_000_000_000;
 const BOOT: BootId = BootId(0x5EED_B007);
 
-/// SplitMix64: детерминированный и достаточный для выбора сценариев.
+/// `SplitMix64`: детерминированный и достаточный для выбора сценариев.
 struct Rng(u64);
 
 impl Rng {
@@ -146,6 +146,37 @@ enum Dest {
     Firmware,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum NonceDirection {
+    Upstream,
+    Downstream,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct Nonce {
+    direction: NonceDirection,
+    id:        u32,
+    counter:   u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wifi {
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ingest {
+    Available,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiveState {
+    On,
+    Off,
+}
+
 /// Сбои, которые генерирует прогон. Без них мир — идеальная сеть с задержкой.
 #[derive(Clone, Copy)]
 struct Chaos {
@@ -179,8 +210,8 @@ struct World<'c> {
     lease_max:  Duration,
     /// Страница живого графика открыта: следующий запрос в этот момент.
     live_poll:  Option<u64>,
-    wifi_down:  bool,
-    ingest_up:  bool,
+    wifi:       Wifi,
+    ingest:     Ingest,
     producing:  bool,
     next_read:  u64,
     next_event: u64,
@@ -194,10 +225,10 @@ struct World<'c> {
     db:         BTreeMap<u64, Reading>,
     /// Когда показание впервые попало в базу.
     stored_at:  BTreeMap<u64, u64>,
-    nonces:     HashSet<(bool, u32, u32)>,
+    nonces:     HashSet<Nonce>,
     /// Байты на уровне IP в обе стороны.
     ip_bytes:   u64,
-    was_live:   bool,
+    was_live:   LiveState,
 }
 
 impl<'c> World<'c> {
@@ -213,8 +244,8 @@ impl<'c> World<'c> {
             lease: LiveLease::new(),
             lease_max: Duration::ZERO,
             live_poll: None,
-            wifi_down: false,
-            ingest_up: true,
+            wifi: Wifi::Up,
+            ingest: Ingest::Available,
             producing: true,
             next_read: 10 * SEC,
             next_event: 5 * MIN,
@@ -228,7 +259,7 @@ impl<'c> World<'c> {
             stored_at: BTreeMap::new(),
             nonces: HashSet::new(),
             ip_bytes: 0,
-            was_live: false,
+            was_live: LiveState::Off,
         }
     }
 
@@ -242,15 +273,28 @@ impl<'c> World<'c> {
 
     /// Датаграмма уходит в сеть: nonce учтён, трафик посчитан, дальше потеря,
     /// дубль и задержка.
-    fn transmit(&mut self, dest: Dest, bytes: Vec<u8>) -> Result<(), String> {
-        let key = match parse_header(&bytes).map_err(|e| format!("unparsable datagram on the wire: {e:?}"))? {
-            Header::Up(h) => (false, h.boot.0, h.seq.0),
-            Header::Down(h) => (true, h.salt.0, h.ack_seq.0),
+    fn transmit(&mut self, dest: Dest, bytes: &[u8]) -> Result<(), String> {
+        let key = match parse_header(bytes).map_err(|e| format!("unparsable datagram on the wire: {e:?}"))? {
+            Header::Up(h) => {
+                Nonce {
+                    direction: NonceDirection::Upstream,
+                    id:        h.boot.0,
+                    counter:   h.seq.0,
+                }
+            }
+            Header::Down(h) => {
+                Nonce {
+                    direction: NonceDirection::Downstream,
+                    id:        h.salt.0,
+                    counter:   h.ack_seq.0,
+                }
+            }
         };
         if !self.nonces.insert(key) {
             return Err(format!("nonce reused: {key:?}"));
         }
-        self.ip_bytes += (bytes.len() + IP_UDP_OVERHEAD) as u64;
+        self.ip_bytes +=
+            u64::try_from(bytes.len() + IP_UDP_OVERHEAD).expect("simulated packet length fits u64");
 
         if self.rng.chance(self.chaos.loss_pct) {
             bump(&self.cov.lost);
@@ -265,7 +309,7 @@ impl<'c> World<'c> {
         for _ in 0..copies {
             let at = self.now + self.rng.below(MAX_DELAY + 1);
             self.net_order += 1;
-            self.net.insert((at, self.net_order), (dest, bytes.clone()));
+            self.net.insert((at, self.net_order), (dest, bytes.to_vec()));
         }
         Ok(())
     }
@@ -293,18 +337,23 @@ impl<'c> World<'c> {
             }
             Some(self.walk[ch])
         };
-        let i32_of = |v: i64| v.clamp(i32::MIN.into(), i32::MAX.into()) as i32;
+        let i32_of = |v: i64| {
+            i32::try_from(v.clamp(i32::MIN.into(), i32::MAX.into())).expect("clamped value fits i32")
+        };
         let mut r = Reading {
             time:      EpochMillis(t),
             pressure:  value(0).map(|v| CentiPascal(i32_of(v))),
             baro_temp: value(1).map(|v| MilliCelsius(i32_of(v))),
-            co2:       value(2).map(|v| Ppm(v.clamp(0, u16::MAX.into()) as u16)),
+            co2:       value(2)
+                .map(|v| Ppm(u16::try_from(v.clamp(0, u16::MAX.into())).expect("clamped value fits u16"))),
             humidity:  value(3).map(|v| MilliPercentRh(i32_of(v))),
             scd_temp:  value(4).map(|v| MilliCelsius(i32_of(v))),
         };
         // Пустое показание прошивка в очередь не кладёт.
         if !r.has_any_channel() {
-            r.co2 = Some(Ppm(self.walk[2] as u16));
+            r.co2 = Some(Ppm(
+                u16::try_from(self.walk[2]).expect("CO2 walk is within u16 range")
+            ));
         }
         self.produced.insert(t, r);
         if let Some(old) = self.sender.on_reading(r) {
@@ -333,7 +382,7 @@ impl<'c> World<'c> {
             let readings = inc
                 .collect_readings()
                 .map_err(|e| format!("datagram {seq:?} does not decode: {e:?}"))?;
-            if !self.ingest_up {
+            if self.ingest == Ingest::Unavailable {
                 bump(&self.cov.ingest_failures);
                 return Ok(());
             }
@@ -357,7 +406,7 @@ impl<'c> World<'c> {
         if ack_req {
             let live_for = self.lease.remaining(now);
             if let Some(ack) = self.server.ack(boot, live_for) {
-                self.transmit(Dest::Firmware, ack.to_vec())?;
+                self.transmit(Dest::Firmware, &ack)?;
             }
         }
         Ok(())
@@ -365,8 +414,18 @@ impl<'c> World<'c> {
 
     fn chaos_event(&mut self) {
         match self.rng.below(10) {
-            0 | 1 => self.wifi_down = !self.wifi_down,
-            2 | 3 => self.ingest_up = !self.ingest_up,
+            0 | 1 => {
+                self.wifi = match self.wifi {
+                    Wifi::Up => Wifi::Down,
+                    Wifi::Down => Wifi::Up,
+                }
+            }
+            2 | 3 => {
+                self.ingest = match self.ingest {
+                    Ingest::Available => Ingest::Unavailable,
+                    Ingest::Unavailable => Ingest::Available,
+                }
+            }
             4 => {
                 self.salt += 1;
                 self.server = Server::new(cipher(), ServerSalt(self.salt));
@@ -385,7 +444,10 @@ impl<'c> World<'c> {
     }
 
     fn next_time(&self) -> u64 {
-        let deadline = self.sender.deadline().map(|u| u.0.as_millis() as u64);
+        let deadline = self
+            .sender
+            .deadline()
+            .map(|u| u64::try_from(u.0.as_millis()).expect("simulation deadline fits u64 milliseconds"));
         [
             self.producing.then_some(self.next_read),
             self.net.keys().next().map(|k| k.0),
@@ -459,7 +521,7 @@ impl<'c> World<'c> {
         // Драйвер прошивки: отправить всё, что автомат отдаёт.
         while let Some(dg) = self.sender.poll(self.uptime()) {
             let bytes = dg.to_vec();
-            let socket_error = if self.wifi_down {
+            let socket_error = if self.wifi == Wifi::Down {
                 self.rng.chance(50)
             } else {
                 self.rng.chance(self.chaos.send_fail_pct)
@@ -469,17 +531,17 @@ impl<'c> World<'c> {
                 self.sender.on_send_failed(self.uptime());
                 break;
             }
-            if self.wifi_down {
+            if self.wifi == Wifi::Down {
                 // Ушло в эфир и пропало. Nonce всё равно израсходован.
-                self.transmit_lost(bytes)?;
+                self.transmit_lost(&bytes)?;
             } else {
-                self.transmit(Dest::Server, bytes)?;
+                self.transmit(Dest::Server, &bytes)?;
             }
         }
         self.check_live_bound()
     }
 
-    fn transmit_lost(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+    fn transmit_lost(&mut self, bytes: &[u8]) -> Result<(), String> {
         let saved = self.chaos.loss_pct;
         self.chaos.loss_pct = 100;
         let res = self.transmit(Dest::Server, bytes);
@@ -492,10 +554,10 @@ impl<'c> World<'c> {
     fn check_live_bound(&mut self) -> Result<(), String> {
         match self.sender.mode() {
             Mode::Live { until } => {
-                if !self.was_live {
+                if self.was_live == LiveState::Off {
                     bump(&self.cov.live_on);
                 }
-                self.was_live = true;
+                self.was_live = LiveState::On;
                 let limit = self.lease_max + Duration::from_millis(MAX_DELAY);
                 if until.0 > limit {
                     return Err(format!(
@@ -505,10 +567,10 @@ impl<'c> World<'c> {
                 }
             }
             Mode::Batch => {
-                if self.was_live {
+                if self.was_live == LiveState::On {
                     bump(&self.cov.live_off);
                 }
-                self.was_live = false;
+                self.was_live = LiveState::Off;
             }
         }
         Ok(())
@@ -517,8 +579,8 @@ impl<'c> World<'c> {
     /// Сбои выключены, датчик молчит: бэклог обязан уйти в базу.
     fn heal(&mut self) -> Result<(), String> {
         self.chaos = CALM;
-        self.wifi_down = false;
-        self.ingest_up = true;
+        self.wifi = Wifi::Up;
+        self.ingest = Ingest::Available;
         self.producing = false;
         self.live_poll = None;
         let end = self.now + HEAL_LIMIT;
@@ -560,7 +622,7 @@ impl<'c> World<'c> {
 fn run(seed: u64, cov: &Coverage) -> Result<(), String> {
     let mut pick = Rng(seed);
     let chaos = Chaos {
-        loss_pct:      [0, 10, 30][pick.below(3) as usize],
+        loss_pct:      [0, 10, 30][usize::try_from(pick.below(3)).expect("index is below three")],
         dup_pct:       5,
         send_fail_pct: 2,
         events:        true,
@@ -578,10 +640,10 @@ fn run(seed: u64, cov: &Coverage) -> Result<(), String> {
     let mut world = World::new(pick.next(), chaos, cov, &mut backlog);
     if long_outage {
         world.run_until(HOUR, |_| false)?;
-        world.wifi_down = true;
+        world.wifi = Wifi::Down;
         world.chaos.events = false;
         world.run_until(HOUR + 13 * HOUR, |_| false)?;
-        world.wifi_down = false;
+        world.wifi = Wifi::Up;
         world.chaos.events = true;
         world.next_event = world.now + MIN;
     }
@@ -641,7 +703,9 @@ fn live_mode_follows_the_page() {
 
     let opened = world.now;
     world.live_poll = Some(opened);
-    let on_by = opened + BATCH_INTERVAL.as_millis() as u64 + 30 * SEC;
+    let on_by = opened
+        + u64::try_from(BATCH_INTERVAL.as_millis()).expect("batch interval fits u64 milliseconds")
+        + 30 * SEC;
     world
         .run_until(on_by, |w| matches!(w.sender.mode(), Mode::Live { .. }))
         .unwrap();
@@ -667,8 +731,10 @@ fn live_mode_follows_the_page() {
     assert!(late.is_empty(), "live readings stored late: {late:?} ms");
 
     world.live_poll = None;
-    let last_request = world.lease_max - LIVE_LEASE;
-    let off_by = last_request.as_millis() as u64 + LIVE_LEASE.as_millis() as u64 + MAX_DELAY;
+    let last_request = world.lease_max.checked_sub(LIVE_LEASE).unwrap();
+    let off_by = u64::try_from(last_request.as_millis()).expect("live lease timestamp fits u64 milliseconds")
+        + u64::try_from(LIVE_LEASE.as_millis()).expect("live lease fits u64 milliseconds")
+        + MAX_DELAY;
     world.run_until(off_by + 1, |_| false).unwrap();
     assert_eq!(world.sender.mode(), Mode::Batch, "live mode outlived the lease");
 }
@@ -689,7 +755,9 @@ fn traffic_per_reading(live: bool, span: u64) -> f64 {
         live,
         "wrong mode for the measurement"
     );
-    (world.ip_bytes - bytes0) as f64 / (world.produced.len() - readings0) as f64
+    let bytes = u32::try_from(world.ip_bytes - bytes0).expect("test traffic fits u32 bytes");
+    let readings = u32::try_from(world.produced.len() - readings0).expect("test reading count fits u32");
+    f64::from(bytes) / f64::from(readings)
 }
 
 /// Инвариант 5: регрессия экономии трафика ловится тестом.

@@ -130,6 +130,29 @@ pub enum Header {
     Down(DownHeader),
 }
 
+/// Подлинная датаграмма прошивка → сервер после успешной проверки тега.
+/// `plaintext` заимствован из переданного буфера датаграммы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenedUplink<'a> {
+    pub header:    UpHeader,
+    pub plaintext: &'a [u8],
+}
+
+/// Расшифрованная датаграмма любого направления.
+/// `plaintext` заимствован из переданного буфера датаграммы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenedDatagram<'a> {
+    pub header:    Header,
+    pub plaintext: &'a [u8],
+}
+
+/// Подлинная и декодированная датаграмма подтверждения сервера.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenedAck {
+    pub header: DownHeader,
+    pub ack:    Ack,
+}
+
 /// Сырые поля `id` и счётчика, общие для обеих разновидностей заголовка.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NonceParts {
@@ -284,7 +307,7 @@ pub fn seal(cipher: &Aes128Gcm, header: Header, buf: &mut [u8], plain_len: usize
 /// После успешного [`parse_header`] длина гарантирует наличие заголовка и
 /// полного тега; преобразование среза тега и разделение заголовка поэтому
 /// соответствуют уже проверенным границам.
-pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<(Header, &'a [u8]), DatagramError> {
+pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<OpenedDatagram<'a>, DatagramError> {
     let header = parse_header(datagram)?;
     let tag_at = datagram.len() - TAG_LEN;
     let (body, tag_bytes) = datagram.split_at_mut(tag_at);
@@ -293,7 +316,10 @@ pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<(Header, &
     cipher
         .decrypt_inout_detached(&header.nonce(), head, ciphertext.into(), &tag)
         .map_err(|_| DatagramError::Decrypt)?;
-    Ok((header, ciphertext))
+    Ok(OpenedDatagram {
+        header,
+        plaintext: ciphertext,
+    })
 }
 
 /// [`open`] для приёмника: принимает только направление прошивка → сервер.
@@ -303,13 +329,16 @@ pub fn open<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<(Header, &
 /// Передаёт ошибки разбора и расшифровки из [`open`], а для корректного
 /// заголовка направления сервер → прошивка возвращает
 /// [`DatagramError::WrongDirection`].
-pub fn open_up<'a>(
-    cipher: &Aes128Gcm,
-    datagram: &'a mut [u8],
-) -> Result<(UpHeader, &'a [u8]), DatagramError> {
-    match open(cipher, datagram)? {
-        (Header::Up(h), plain) => Ok((h, plain)),
-        (Header::Down(_), _) => Err(DatagramError::WrongDirection),
+pub fn open_up<'a>(cipher: &Aes128Gcm, datagram: &'a mut [u8]) -> Result<OpenedUplink<'a>, DatagramError> {
+    let opened = open(cipher, datagram)?;
+    match opened.header {
+        Header::Up(header) => {
+            Ok(OpenedUplink {
+                header,
+                plaintext: opened.plaintext,
+            })
+        }
+        Header::Down(_) => Err(DatagramError::WrongDirection),
     }
 }
 
@@ -320,10 +349,16 @@ pub fn open_up<'a>(
 /// Передаёт ошибки разбора и расшифровки из [`open`], ошибку декодирования
 /// подтверждения из [`Ack::from_bytes`] либо [`DatagramError::WrongDirection`]
 /// для направления прошивка → сервер.
-pub fn open_ack(cipher: &Aes128Gcm, datagram: &mut [u8]) -> Result<(DownHeader, Ack), DatagramError> {
-    match open(cipher, datagram)? {
-        (Header::Down(h), plain) => Ok((h, Ack::from_bytes(plain)?)),
-        (Header::Up(_), _) => Err(DatagramError::WrongDirection),
+pub fn open_ack(cipher: &Aes128Gcm, datagram: &mut [u8]) -> Result<OpenedAck, DatagramError> {
+    let opened = open(cipher, datagram)?;
+    match opened.header {
+        Header::Down(header) => {
+            Ok(OpenedAck {
+                header,
+                ack: Ack::from_bytes(opened.plaintext)?,
+            })
+        }
+        Header::Up(_) => Err(DatagramError::WrongDirection),
     }
 }
 

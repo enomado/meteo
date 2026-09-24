@@ -89,14 +89,16 @@ fn realistic_reading_is_small() {
     // Типовой цикл 30 с: мелкие приращения ⇒ показание ≈ 12–15 Б.
     let base = 1_758_000_000_000;
     let readings: Vec<Reading> = (0..4)
-        .map(|i| {
+        .map(|index| {
+            let index_i32 = i32::try_from(index).expect("the test uses four readings");
+            let co2_index = u16::try_from(index).expect("the test uses four readings");
             Reading {
-                time:      EpochMillis(base + i * 30_012),
-                pressure:  Some(CentiPascal(10_132_500 + i as i32 * 37)),
-                baro_temp: Some(MilliCelsius(21_500 - i as i32 * 11)),
-                co2:       Some(Ppm(812 + i as u16 * 5)),
-                humidity:  Some(MilliPercentRh(45_120 + i as i32 * 150)),
-                scd_temp:  Some(MilliCelsius(22_310 + i as i32 * 9)),
+                time:      EpochMillis(base + index * 30_012),
+                pressure:  Some(CentiPascal(10_132_500 + index_i32 * 37)),
+                baro_temp: Some(MilliCelsius(21_500 - index_i32 * 11)),
+                co2:       Some(Ppm(812 + co2_index * 5)),
+                humidity:  Some(MilliPercentRh(45_120 + index_i32 * 150)),
+                scd_temp:  Some(MilliCelsius(22_310 + index_i32 * 9)),
             }
         })
         .collect();
@@ -110,13 +112,13 @@ fn realistic_reading_is_small() {
 #[test]
 fn absent_channels_do_not_break_deltas() {
     let t = 1_758_000_000_000;
-    let mut a = full(t, 1000, 400);
-    a.humidity = None;
-    let mut b = full(t + 1, 2000, 500);
-    b.pressure = None;
-    b.co2 = None;
-    let c = full(t - 5000, -3, 600); // время назад — NTP-пересинхронизация
-    let d = Reading {
+    let mut with_missing_humidity = full(t, 1000, 400);
+    with_missing_humidity.humidity = None;
+    let mut with_missing_pressure_and_co2 = full(t + 1, 2000, 500);
+    with_missing_pressure_and_co2.pressure = None;
+    with_missing_pressure_and_co2.co2 = None;
+    let stepped_back = full(t - 5000, -3, 600); // NTP-пересинхронизация
+    let empty = Reading {
         time:      EpochMillis(t + 7),
         pressure:  None,
         baro_temp: None,
@@ -124,9 +126,25 @@ fn absent_channels_do_not_break_deltas() {
         humidity:  None,
         scd_temp:  None,
     };
-    let (plain, taken) = encode(&[a, b, c, d], PLAIN_CAPACITY);
+    let (plain, taken) = encode(
+        &[
+            with_missing_humidity,
+            with_missing_pressure_and_co2,
+            stepped_back,
+            empty,
+        ],
+        PLAIN_CAPACITY,
+    );
     assert_eq!(taken, 4);
-    assert_eq!(decode_all(&plain), Ok(vec![a, b, c, d]));
+    assert_eq!(
+        decode_all(&plain),
+        Ok(vec![
+            with_missing_humidity,
+            with_missing_pressure_and_co2,
+            stepped_back,
+            empty,
+        ])
+    );
 }
 
 #[test]
@@ -181,14 +199,14 @@ fn reading() -> impl Strategy<Value = Reading> {
         proptest::option::of(any::<i32>()),
         proptest::option::of(any::<i32>()),
     )
-        .prop_map(|(t, p, bt, co2, h, st)| {
+        .prop_map(|(time, pressure, baro_temp, co2, humidity, scd_temp)| {
             Reading {
-                time:      EpochMillis(t),
-                pressure:  p.map(CentiPascal),
-                baro_temp: bt.map(MilliCelsius),
+                time:      EpochMillis(time),
+                pressure:  pressure.map(CentiPascal),
+                baro_temp: baro_temp.map(MilliCelsius),
                 co2:       co2.map(Ppm),
-                humidity:  h.map(MilliPercentRh),
-                scd_temp:  st.map(MilliCelsius),
+                humidity:  humidity.map(MilliPercentRh),
+                scd_temp:  scd_temp.map(MilliCelsius),
             }
         })
 }

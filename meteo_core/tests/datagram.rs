@@ -51,9 +51,14 @@ fn up_roundtrip_and_header_layout() {
     let mut dg = up_datagram(UP, plain);
     assert_eq!(dg.len(), HEADER_LEN + plain.len() + TAG_LEN);
     assert_eq!(&dg[..HEADER_LEN], &[0x11, 0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 7]);
-    let (header, opened) = open_up(&cipher(), &mut dg).unwrap();
-    assert_eq!(header, UP);
-    assert_eq!(opened, plain);
+    let mut any_direction = dg.clone();
+    let opened = open(&cipher(), &mut any_direction).unwrap();
+    assert_eq!(opened.header, Header::Up(UP));
+    assert_eq!(opened.plaintext, plain);
+
+    let opened = open_up(&cipher(), &mut dg).unwrap();
+    assert_eq!(opened.header, UP);
+    assert_eq!(opened.plaintext, plain);
 }
 
 #[test]
@@ -61,7 +66,7 @@ fn full_capacity_datagram_roundtrips() {
     let plain = vec![0xA5; PLAIN_CAPACITY];
     let mut dg = up_datagram(UP, &plain);
     assert_eq!(dg.len(), MAX_DATAGRAM);
-    assert_eq!(open_up(&cipher(), &mut dg).unwrap().1, &plain[..]);
+    assert_eq!(open_up(&cipher(), &mut dg).unwrap().plaintext, &plain[..]);
 }
 
 #[test]
@@ -188,7 +193,10 @@ fn ack_roundtrip() {
     };
     let mut dg = ack.seal(&cipher(), header);
     assert_eq!(dg.len(), ACK_DATAGRAM_LEN);
-    assert_eq!(open_ack(&cipher(), &mut dg), Ok((header, ack)));
+    assert_eq!(
+        open_ack(&cipher(), &mut dg),
+        Ok(meteo_core::datagram::OpenedAck { header, ack })
+    );
 }
 
 #[test]

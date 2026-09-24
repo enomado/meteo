@@ -41,7 +41,8 @@ fn worst_reading(i: u64) -> SensorData {
 }
 
 fn batch_of(n: usize, reading: impl Fn(u64) -> SensorData) -> SensorBatch {
-    (0..n as u64).map(reading).collect()
+    let count = u64::try_from(n).expect("test batch length fits u64");
+    (0..count).map(reading).collect()
 }
 
 /// Encode прошивки → разбор кадра → decode приёмника.
@@ -65,7 +66,7 @@ fn sparse_and_empty_batches_roundtrip() {
         SensorData {
             baro: None,
             scd:  (i % 2 == 0).then_some(ScdReading {
-                co2:      400 + i as u16,
+                co2:      400 + u16::try_from(i).expect("test has three readings"),
                 humidity: 40.5,
                 temp:     21.25,
             }),
@@ -104,19 +105,23 @@ fn any_flipped_bit_fails_decrypt() {
 #[test]
 fn payload_len_bounds() {
     let prefix = |n: u32| n.to_be_bytes();
-    assert_eq!(payload_len(prefix(TAG_LEN as u32)), Ok(TAG_LEN));
-    assert_eq!(payload_len(prefix(MAX_PAYLOAD_LEN as u32)), Ok(MAX_PAYLOAD_LEN));
+    let tag_len = u32::try_from(TAG_LEN).expect("tag length fits u32");
+    let max_payload_len = u32::try_from(MAX_PAYLOAD_LEN).expect("payload length fits u32");
+    assert_eq!(payload_len(prefix(tag_len)), Ok(TAG_LEN));
+    assert_eq!(payload_len(prefix(max_payload_len)), Ok(MAX_PAYLOAD_LEN));
     assert_eq!(
-        payload_len(prefix(TAG_LEN as u32 - 1)),
+        payload_len(prefix(tag_len - 1)),
         Err(PacketError::LengthOutOfRange(TAG_LEN - 1))
     );
     assert_eq!(
-        payload_len(prefix(MAX_PAYLOAD_LEN as u32 + 1)),
+        payload_len(prefix(max_payload_len + 1)),
         Err(PacketError::LengthOutOfRange(MAX_PAYLOAD_LEN + 1))
     );
     assert_eq!(
         payload_len(prefix(u32::MAX)),
-        Err(PacketError::LengthOutOfRange(u32::MAX as usize))
+        Err(PacketError::LengthOutOfRange(
+            usize::try_from(u32::MAX).expect("u32 always fits usize on supported targets"),
+        ))
     );
 }
 

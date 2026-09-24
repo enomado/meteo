@@ -69,7 +69,7 @@ fn net_stall_uses_its_own_limit() {
 #[test]
 fn revival_before_hw_timeout_resumes_feeding() {
     let mut sup = Supervisor::new(at(0), heartbeats(0, 0));
-    sup.tick(at(10), heartbeats(1, 1));
+    assert_eq!(sup.tick(at(10), heartbeats(1, 1)), Verdict::Feed);
     let stalled_at = 10 + SENSOR_STALL_LIMIT.as_secs();
     assert_eq!(sup.tick(at(stalled_at), heartbeats(1, 2)), SENSOR_STALLED);
     assert_eq!(sup.tick(at(stalled_at + 10), heartbeats(2, 3)), Verdict::Feed);

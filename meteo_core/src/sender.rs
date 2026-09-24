@@ -210,7 +210,8 @@ impl<'b> Sender<'b> {
     /// тег или размер подтверждения недопустимы. Возвращает
     /// [`AckError::ForeignBoot`], если подтверждение адресовано другой загрузке.
     pub fn on_datagram(&mut self, datagram: &mut [u8], now: Uptime) -> Result<(), AckError> {
-        let (_, ack) = open_ack(&self.cipher, datagram).map_err(AckError::Datagram)?;
+        let opened = open_ack(&self.cipher, datagram).map_err(AckError::Datagram)?;
+        let ack = opened.ack;
         if ack.boot != self.boot {
             return Err(AckError::ForeignBoot);
         }
