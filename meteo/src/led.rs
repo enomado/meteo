@@ -24,6 +24,7 @@ use esp_hal::ledc::{
 };
 use esp_hal::peripherals::LEDC;
 use esp_hal::time::Rate;
+use meteo_core::codec::Ppm;
 use meteo_core::led_color::{
     Rgb,
     co2_to_rgb,
@@ -31,7 +32,7 @@ use meteo_core::led_color::{
 };
 use portable_atomic::{
     AtomicU8,
-    AtomicU16,
+    AtomicU32,
     Ordering,
 };
 
@@ -48,13 +49,11 @@ pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset
 
 pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 
-/// Сентинел «свежего CO2 нет» (ещё не измерялся или последний цикл SCD41
-/// сбойный): атомик не умеет хранить `Option`, поэтому отсутствие кодируем
-/// значением. Наружу отдаём честный `Option` — см. [`latest_co2`], сравнений с
-/// `u16::MAX` в логике быть не должно.
-const NO_CO2: u16 = u16::MAX;
+/// Код отсутствия занимает значение за пределами диапазона `Ppm`.
+/// `u32` атомик сохраняет все 65536 возможных значений CO2 без потери.
+const NO_CO2: u32 = u32::MAX;
 
-static LATEST_CO2: AtomicU16 = AtomicU16::new(NO_CO2);
+static LATEST_CO2: AtomicU32 = AtomicU32::new(NO_CO2);
 
 /// Яркость blink-кодов (проценты). Заметно выше CO2-палитры: код ошибки должен
 /// читаться с другого конца комнаты.
@@ -141,8 +140,8 @@ pub fn clear_status(bits: u8) {
     log_status_change(bits & prev, false);
 }
 
-pub fn publish_co2(co2: u16) {
-    LATEST_CO2.store(co2, Ordering::Relaxed);
+pub fn publish_co2(co2: Ppm) {
+    LATEST_CO2.store(u32::from(co2.0), Ordering::Relaxed);
 }
 
 /// Показание CO2 протухло: SCD41 не отдал измерение в этом цикле.
@@ -155,10 +154,14 @@ pub fn clear_co2() {
 }
 
 /// Последнее измерение CO2, `None` — свежего показания нет.
-pub fn latest_co2() -> Option<u16> {
+///
+/// # Panics
+///
+/// Паникует, если атомарное хранилище содержит значение вне диапазона `Ppm`.
+pub fn latest_co2() -> Option<Ppm> {
     match LATEST_CO2.load(Ordering::Relaxed) {
         NO_CO2 => None,
-        co2 => Some(co2),
+        co2 => Some(Ppm(u16::try_from(co2).expect("stored CO2 values fit in u16"))),
     }
 }
 
@@ -331,7 +334,7 @@ async fn play_blink_codes(led: &mut RgbLed<'_>, only_bits: u8) {
 
 /// Сыграть один CO2-step (статика 2 сек или один breathing-цикл).
 /// Возвращает фактически проведённое время в мс — для accumulated-таймера overlay.
-async fn play_co2_step(led: &mut RgbLed<'_>, co2: u16) -> u32 {
+async fn play_co2_step(led: &mut RgbLed<'_>, co2: Ppm) -> u32 {
     let bright = co2_to_rgb(co2);
     match pulse_params(co2) {
         None => {

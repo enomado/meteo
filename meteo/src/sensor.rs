@@ -454,7 +454,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         // SCD41 гасит показание: старое значение на LED выдавало бы мёртвый
         // сенсор за живой.
         match &scd_reading {
-            Some(s) => publish_co2(s.co2),
+            Some(s) => publish_co2(Ppm(s.co2)),
             None => clear_co2(),
         }
 

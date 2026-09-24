@@ -1,6 +1,8 @@
 //! CO2 → цвет и «дыхание» индикатора. Чистые функции без LEDC: прошивка
 //! только применяет результат к каналам.
 
+use crate::codec::Ppm;
+
 /// Яркость канала в процентах (0..=100) — ровно то, что принимает LEDC
 /// `set_duty`.
 ///
@@ -57,8 +59,8 @@ fn lerp(a: f32, b: f32, t: f32) -> u8 {
 }
 
 /// Параметр t∈[0,1] для co2 в отрезке [lo, hi]. Предусловие: lo ≤ co2 ≤ hi.
-fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
-    f32::from(co2 - lo) / f32::from(hi - lo)
+fn segment_t(co2: Ppm, lo: u16, hi: u16) -> f32 {
+    f32::from(co2.0 - lo) / f32::from(hi - lo)
 }
 
 /// CO2 ppm → цвет, яркость в долях `CO2_MAX_LEVEL`.
@@ -70,11 +72,11 @@ fn segment_t(co2: u16, lo: u16, hi: u16) -> f32 {
 /// - 1000-1500: оранжевый → красный (тут включается breathing pulse)
 /// - 1500+: чистый красный
 #[must_use]
-pub fn co2_to_rgb(co2: u16) -> Rgb {
+pub fn co2_to_rgb(co2: Ppm) -> Rgb {
     const MAX: u8 = CO2_MAX_LEVEL;
     let m = f32::from(MAX);
 
-    match co2 {
+    match co2.0 {
         0..=400 => Rgb::new(0, MAX, 0),
         // зелёный → жёлтый: красный канал поднимается 0 → MAX
         401..=700 => Rgb::new(lerp(0.0, m, segment_t(co2, 400, 700)), MAX, 0),
@@ -98,8 +100,8 @@ pub struct PulseSpec {
 /// CO2 → параметры пульса. `None` = статичный цвет (нормальная атмосфера).
 /// Чем выше CO2, тем быстрее и глубже дыхание.
 #[must_use]
-pub const fn pulse_params(co2: u16) -> Option<PulseSpec> {
-    match co2 {
+pub const fn pulse_params(co2: Ppm) -> Option<PulseSpec> {
+    match co2.0 {
         0..=999 => None,
         1000..=1399 => {
             Some(PulseSpec {
