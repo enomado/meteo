@@ -1,3 +1,10 @@
+// Wi-Fi and network tasks run on one ESP32-C3 Embassy executor; their futures
+// do not migrate between threads, so the hardware drivers may remain !Send.
+#![allow(
+    clippy::future_not_send,
+    reason = "Wi-Fi and network futures run on the single ESP32-C3 Embassy executor"
+)]
+
 use aes_gcm::{
     Aes128Gcm,
     KeyInit,
@@ -77,6 +84,7 @@ fn check_network_count() {
 }
 
 /// Основная сеть для начальной конфигурации радио до первого скана.
+#[must_use]
 pub fn primary_network() -> Network<'static> {
     check_network_count();
     WIFI_NETWORKS[0]
@@ -90,8 +98,6 @@ pub fn primary_network() -> Network<'static> {
 /// перебираем сети по кругу (`attempt`).
 async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) -> Network<'static> {
     check_network_count();
-    // Build output is currently a tuple slice. Convert it once at this boundary;
-    // the core and the rest of the firmware use named credential fields.
     let first = WIFI_NETWORKS[0];
     let mut configured = [first; 2];
     if let Some(&network) = WIFI_NETWORKS.get(1) {
@@ -114,16 +120,16 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
     };
 
     let seen = aps.iter().map(|ap| (ap.ssid.as_str(), Rssi(ap.signal_strength)));
-    match strongest(networks, seen) {
-        Some(pick) => {
-            println!("scan: picked {} (rssi {})", pick.network.ssid, pick.rssi.0);
-            pick.network
-        }
-        None => {
+    strongest(networks, seen).map_or_else(
+        || {
             println!("scan: no configured SSID on air, trying {}", fallback.ssid);
             fallback
-        }
-    }
+        },
+        |pick| {
+            println!("scan: picked {} (rssi {})", pick.network.ssid, pick.rssi.0);
+            pick.network
+        },
+    )
 }
 
 /// Конфиг станции для сети из `WIFI_NETWORKS`.
@@ -133,6 +139,11 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
 /// Длины SSID/пароля проверяет build-скрипт (`build_helpers::check_network`),
 /// поэтому конверсия здесь не может упасть: паника на буте свалила бы плату в
 /// бесконечный цикл reset'ов.
+///
+/// # Panics
+///
+/// Panics if the build-time SSID or password length check is bypassed.
+#[must_use]
 pub fn station_config(network: Network<'_>) -> Config {
     Config::Station(
         StationConfig::default()
@@ -181,13 +192,13 @@ pub async fn connection(mut controller: WifiController<'static>) {
             }
         }
 
-        Timer::after(Duration::from_millis(5000)).await
+        Timer::after(Duration::from_millis(5000)).await;
     }
 }
 
 #[embassy_executor::task]
 pub async fn net_task(mut runner: Runner<'static, Interface>) {
-    runner.run().await
+    runner.run().await;
 }
 
 /// Предел одной отправки: `send_to` ждёт места в tx-буфере, а без сети оно
