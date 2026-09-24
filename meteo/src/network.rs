@@ -45,6 +45,7 @@ use meteo_core::sender::{
 use meteo_core::wifi_pick::{
     Network,
     Rssi,
+    ScannedAccessPoint,
     round_robin,
     strongest,
 };
@@ -119,7 +120,12 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
         }
     };
 
-    let seen = aps.iter().map(|ap| (ap.ssid.as_str(), Rssi(ap.signal_strength)));
+    let seen = aps.iter().map(|ap| {
+        ScannedAccessPoint {
+            ssid: ap.ssid.as_str(),
+            rssi: Rssi(ap.signal_strength),
+        }
+    });
     strongest(networks, seen).map_or_else(
         || {
             println!("scan: no configured SSID on air, trying {}", fallback.ssid);

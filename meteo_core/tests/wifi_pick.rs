@@ -1,6 +1,7 @@
 use meteo_core::wifi_pick::{
     Network,
     Rssi,
+    ScannedAccessPoint,
     round_robin,
     strongest,
 };
@@ -18,9 +19,18 @@ const NETS: [Network<'static>; 2] = [HOME, DACHA];
 #[test]
 fn strongest_configured_network_wins() {
     let seen = [
-        ("neighbour", Rssi(-30)),
-        ("home", Rssi(-70)),
-        ("dacha", Rssi(-55)),
+        ScannedAccessPoint {
+            ssid: "neighbour",
+            rssi: Rssi(-30),
+        },
+        ScannedAccessPoint {
+            ssid: "home",
+            rssi: Rssi(-70),
+        },
+        ScannedAccessPoint {
+            ssid: "dacha",
+            rssi: Rssi(-55),
+        },
     ];
     assert_eq!(
         strongest(&NETS, seen),
@@ -33,14 +43,36 @@ fn strongest_configured_network_wins() {
 
 #[test]
 fn foreign_ssids_are_ignored() {
-    let seen = [("neighbour", Rssi(-20)), ("cafe", Rssi(-40))];
+    let seen = [
+        ScannedAccessPoint {
+            ssid: "neighbour",
+            rssi: Rssi(-20),
+        },
+        ScannedAccessPoint {
+            ssid: "cafe",
+            rssi: Rssi(-40),
+        },
+    ];
     assert_eq!(strongest(&NETS, seen), None);
     assert_eq!(strongest(&NETS, []), None);
 }
 
 #[test]
 fn several_aps_of_one_network_take_the_strongest() {
-    let seen = [("home", Rssi(-80)), ("dacha", Rssi(-60)), ("home", Rssi(-50))];
+    let seen = [
+        ScannedAccessPoint {
+            ssid: "home",
+            rssi: Rssi(-80),
+        },
+        ScannedAccessPoint {
+            ssid: "dacha",
+            rssi: Rssi(-60),
+        },
+        ScannedAccessPoint {
+            ssid: "home",
+            rssi: Rssi(-50),
+        },
+    ];
     assert_eq!(
         strongest(&NETS, seen),
         Some(meteo_core::wifi_pick::NetworkSignal {
@@ -52,7 +84,16 @@ fn several_aps_of_one_network_take_the_strongest() {
 
 #[test]
 fn tie_keeps_the_first_seen() {
-    let seen = [("dacha", Rssi(-60)), ("home", Rssi(-60))];
+    let seen = [
+        ScannedAccessPoint {
+            ssid: "dacha",
+            rssi: Rssi(-60),
+        },
+        ScannedAccessPoint {
+            ssid: "home",
+            rssi: Rssi(-60),
+        },
+    ];
     assert_eq!(
         strongest(&NETS, seen),
         Some(meteo_core::wifi_pick::NetworkSignal {

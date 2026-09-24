@@ -23,6 +23,13 @@ pub struct NetworkSignal<'n> {
     pub rssi:    Rssi,
 }
 
+/// Точка доступа из результата сканирования `WiFi`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScannedAccessPoint<'s> {
+    pub ssid: &'s str,
+    pub rssi: Rssi,
+}
+
 /// Настроенная сеть с самым сильным сигналом среди увиденных точек доступа.
 ///
 /// Чужие SSID игнорируются; у сети с несколькими AP берётся сильнейшая. При
@@ -31,15 +38,18 @@ pub struct NetworkSignal<'n> {
 #[must_use]
 pub fn strongest<'n, 's>(
     networks: &[Network<'n>],
-    seen: impl IntoIterator<Item = (&'s str, Rssi)>,
+    seen: impl IntoIterator<Item = ScannedAccessPoint<'s>>,
 ) -> Option<NetworkSignal<'n>> {
     let mut best: Option<NetworkSignal<'n>> = None;
-    for (ssid, rssi) in seen {
-        let Some(net) = networks.iter().find(|network| network.ssid == ssid) else {
+    for ap in seen {
+        let Some(net) = networks.iter().find(|network| network.ssid == ap.ssid) else {
             continue;
         };
-        if best.is_none_or(|best| rssi > best.rssi) {
-            best = Some(NetworkSignal { network: *net, rssi });
+        if best.is_none_or(|best| ap.rssi > best.rssi) {
+            best = Some(NetworkSignal {
+                network: *net,
+                rssi:    ap.rssi,
+            });
         }
     }
     best
