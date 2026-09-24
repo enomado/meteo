@@ -176,6 +176,22 @@ enum BaroPoll {
     Failed,
 }
 
+/// Переводит давление BMP390 в целые гПа, допустимые для `SCD4x`.
+/// `SCD4x` принимает 700–1200 гПа; недопустимое давление не должно менять
+/// последнюю валидную компенсацию.
+fn scd_ambient_pressure_hpa(pressure_pa: f32) -> Option<u16> {
+    const MIN_PRESSURE_PA: f32 = 70_000.0;
+    const MAX_PRESSURE_PA: f32 = 120_000.0;
+
+    if !pressure_pa.is_finite() || !(MIN_PRESSURE_PA..=MAX_PRESSURE_PA).contains(&pressure_pa) {
+        return None;
+    }
+
+    // API SCD4x принимает целые гПа; сохраняем прежнее усечение дробной части.
+    // К этому cast дошли только для конечного давления в диапазоне 700–1200 гПа.
+    Some((pressure_pa / 100.0) as u16)
+}
+
 /// Один опрос BMP390: статус drdy → чтение. Ошибки шины логируются здесь,
 /// решение (ретрай / пропуск цикла / SYS_NO_PERIPH) принимает вызывающий.
 async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> BaroPoll {
@@ -397,7 +413,14 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         if let Some(ref mut barometer) = barometer {
             match poll_barometer(barometer).await {
                 BaroPoll::Ready(reading) => {
-                    last_pressure_hpa = Some((reading.pressure / 100.0) as u16);
+                    if let Some(pressure_hpa) = scd_ambient_pressure_hpa(reading.pressure) {
+                        last_pressure_hpa = Some(pressure_hpa);
+                    } else {
+                        println!(
+                            "BMP390: pressure {} Pa outside SCD4x compensation range (70000..=120000 Pa); keeping last valid pressure",
+                            reading.pressure
+                        );
+                    }
                     println!("BMP390: P={:.1} T={:.2}", reading.pressure, reading.temp);
                     baro = Some(reading);
                 }
