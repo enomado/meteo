@@ -82,7 +82,9 @@ fn scaled_never_brightens() {
 #[test]
 fn scaled_caps_percent_above_full_brightness() {
     let rgb = Rgb::new(100, 70, 1);
+    let out_of_range_rgb = Rgb::new(255, 200, 1);
 
     assert_eq!(rgb.scaled(101), rgb);
     assert_eq!(rgb.scaled(u8::MAX), rgb);
+    assert_eq!(out_of_range_rgb.scaled(u8::MAX), out_of_range_rgb);
 }
