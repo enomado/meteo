@@ -22,6 +22,10 @@
 //!
 //! Ожидание подтверждения одно на запрос; таймаут или сбой отправки ⇒ всё в
 //! полёте снова `Pending`, пауза `RETRY` с удвоением до `BATCH_INTERVAL`.
+//!
+//! Снимок журнала здоровья ([`Sender::on_health`]) живёт так же, как
+//! показание, но он один: новый снимок вытесняет прежний. Едет первым в
+//! датаграмме и уходит и без показаний — по тому же расписанию.
 
 use core::time::Duration;
 
@@ -43,8 +47,10 @@ use crate::datagram::{
     plain_area,
     seal,
 };
+use crate::health::Snapshot;
 use crate::recv_window::SeqStatus;
 use crate::supervisor::Uptime;
+use crate::wire::EpochMillis;
 
 /// Период батчей: компромисс трафика и задержки включения живого режима
 /// (сигнал едет в подтверждении батча).
@@ -75,6 +81,20 @@ enum SlotState {
 struct Slot {
     reading: Reading,
     state:   SlotState,
+}
+
+/// Судьба последнего снимка журнала здоровья.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthState {
+    Sent(SlotState),
+    /// Сервер записал этот снимок.
+    Delivered,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HealthSlot {
+    snapshot: Snapshot,
+    state:    HealthState,
 }
 
 /// Хранилище показаний отправителя (около 80 КБ при `BACKLOG` = 1440).
@@ -141,6 +161,8 @@ pub struct Sender<'b> {
     since_ack_req: u32,
     /// Последний запрос подтверждения получил ответ (для LED «нет сервера»).
     reachable:     bool,
+    /// `None` — снимка ещё не было.
+    health:        Option<HealthSlot>,
     buf:           DatagramBuf,
 }
 
@@ -162,8 +184,27 @@ impl<'b> Sender<'b> {
             backoff: RETRY,
             since_ack_req: 0,
             reachable: true,
+            health: None,
             buf: [0u8; MAX_DATAGRAM],
         }
+    }
+
+    /// Текущий снимок журнала здоровья. Тот же, что последний, — ничего не
+    /// меняет; другой — вытесняет прежний и ждёт отправки.
+    pub fn on_health(&mut self, snapshot: Snapshot) {
+        if self.health.is_some_and(|h| h.snapshot == snapshot) {
+            return;
+        }
+        self.health = Some(HealthSlot {
+            snapshot,
+            state: HealthState::Sent(SlotState::Pending),
+        });
+    }
+
+    /// Последний снимок записан сервером.
+    #[must_use]
+    pub fn health_delivered(&self) -> bool {
+        self.health.is_some_and(|h| h.state == HealthState::Delivered)
     }
 
     #[must_use]
@@ -231,6 +272,15 @@ impl<'b> Sender<'b> {
                 SeqStatus::Ahead => true,
             }
         });
+        if let Some(h) = &mut self.health
+            && let HealthState::Sent(SlotState::InFlight(seq)) = h.state
+        {
+            h.state = match ack.window.status(seq) {
+                SeqStatus::Seen => HealthState::Delivered,
+                SeqStatus::NotSeen | SeqStatus::OutOfWindow => HealthState::Sent(SlotState::Pending),
+                SeqStatus::Ahead => h.state,
+            };
+        }
 
         // Ответ на текущий запрос: сервер жив, режим — по его слову. Опоздавшие
         // подтверждения режим не трогают — они старше последнего запроса.
@@ -310,7 +360,12 @@ impl<'b> Sender<'b> {
     }
 
     fn has_pending(&self) -> bool {
-        self.backlog.iter().any(|s| s.state == SlotState::Pending)
+        self.health_pending() || self.backlog.iter().any(|s| s.state == SlotState::Pending)
+    }
+
+    fn health_pending(&self) -> bool {
+        self.health
+            .is_some_and(|h| h.state == HealthState::Sent(SlotState::Pending))
     }
 
     /// Истечения по времени: таймаут подтверждения, конец паузы, конец срока.
@@ -355,6 +410,11 @@ impl<'b> Sender<'b> {
         for slot in self.backlog.iter_mut() {
             slot.state = SlotState::Pending;
         }
+        if let Some(h) = &mut self.health
+            && matches!(h.state, HealthState::Sent(SlotState::InFlight(_)))
+        {
+            h.state = HealthState::Sent(SlotState::Pending);
+        }
     }
 
     /// Собрать датаграмму из `Pending` (старые первыми, сколько влезет).
@@ -362,14 +422,24 @@ impl<'b> Sender<'b> {
         let seq = self.next_seq;
         self.next_seq = seq.next();
 
+        // Только снимок, без показаний, — база времени не нужна никому.
         let first = self
             .backlog
             .iter()
             .find(|s| s.state == SlotState::Pending)
-            .expect("compose runs only with pending readings")
-            .reading
-            .time;
+            .map_or(EpochMillis(0), |s| s.reading.time);
         let mut encoder = Encoder::new(plain_area(&mut self.buf), first);
+        if let Some(h) = &mut self.health
+            && h.state == HealthState::Sent(SlotState::Pending)
+        {
+            // Первым в пустой датаграмме он влезает всегда
+            // (`codec::MIN_PLAIN_WITH_HEALTH`).
+            assert!(
+                encoder.push_health(&h.snapshot),
+                "health snapshot fits an empty datagram"
+            );
+            h.state = HealthState::Sent(SlotState::InFlight(seq));
+        }
         let mut full = false;
         for slot in self.backlog.iter_mut().filter(|s| s.state == SlotState::Pending) {
             if !encoder.push(&slot.reading) {

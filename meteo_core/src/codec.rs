@@ -10,7 +10,16 @@
 //!
 //! Состояние дельт живёт только внутри одной датаграммы (старт — нули ⇒ первое
 //! значение абсолютное): потеря датаграммы не портит следующие.
+//!
+//! Расширенная запись: первый байт с битом 7 (у байта присутствия он
+//! зарезервирован) = `0x80 | вид`. Вид 0 — снимок журнала здоровья:
+//! `layout` (varint), `n` (varint), `n` слов (varint). Времени и дельт у неё
+//! нет, цепочку показаний она не трогает.
 
+use crate::health::{
+    SNAPSHOT_WORDS,
+    Snapshot,
+};
 use crate::wire::EpochMillis;
 
 /// Давление, 0.01 Па (≈ шаг f32 около 100 кПа).
@@ -104,8 +113,36 @@ pub struct Reading {
 
 /// Число каналов = число битов присутствия.
 const CHANNELS: usize = 5;
-/// Биты 5–7 байта присутствия.
-const RESERVED_PRESENCE: u8 = !((1 << CHANNELS) - 1);
+/// Первый байт расширенной записи.
+const EXTENDED: u8 = 0x80;
+/// Вид расширенной записи: снимок журнала здоровья.
+const KIND_HEALTH: u8 = 0;
+/// Биты 5–6 байта присутствия (бит 7 — признак расширенной записи).
+const RESERVED_PRESENCE: u8 = !((1 << CHANNELS) - 1) & !EXTENDED;
+
+/// Больше слов в снимке декодер не примет (своя раскладка — `SNAPSHOT_WORDS`;
+/// запас — под снимки прошивок с другой раскладкой).
+pub const HEALTH_WORDS_MAX: usize = 96;
+
+/// Снимок журнала здоровья, как он пришёл: раскладку проверяет получатель
+/// ([`Snapshot::from_record`]) — снимок чужой раскладки всё равно можно
+/// показать сырым.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthRecord {
+    pub layout: u32,
+    pub words:  heapless::Vec<u32, HEALTH_WORDS_MAX>,
+}
+
+/// Запись открытого текста датаграммы.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "records are yielded one at a time and only on the receiver side; boxing needs alloc in no_std"
+)]
+pub enum Record {
+    Reading(Reading),
+    Health(HealthRecord),
+}
 
 impl Reading {
     /// Есть ли хоть один канал. Пустое показание прошивка в очередь не кладёт.
@@ -169,12 +206,20 @@ const DELTA_U16_MAX: usize = varint_len(zigzag(u16::MAX as i64));
 /// Худшее показание: присутствие + dt + четыре i32-канала + CO2.
 pub const READING_MAX: usize = 1 + VARINT_U64_MAX + 4 * DELTA_I32_MAX + DELTA_U16_MAX;
 
+/// Худшая длина varint u32.
+const VARINT_U32_MAX: usize = varint_len(u32::MAX as u64);
+/// Худший снимок своей раскладки: байт вида, `layout`, `n`, слова.
+pub const HEALTH_MAX: usize = 1 + 2 * VARINT_U32_MAX + SNAPSHOT_WORDS * VARINT_U32_MAX;
+
 /// Сколько места нужно кодировщику, чтобы влезло хотя бы одно показание.
 pub const MIN_PLAIN: usize = VARINT_U64_MAX + READING_MAX;
 
-// Хотя бы одно показание худшего размера влезает в любую датаграмму ⇒ отправитель
-// всегда продвигается, даже если в бэклоге только худшие показания.
-const _: () = assert!(MIN_PLAIN <= crate::datagram::PLAIN_CAPACITY);
+/// Датаграмма отправителя: снимок первым и хотя бы одно показание за ним.
+pub const MIN_PLAIN_WITH_HEALTH: usize = MIN_PLAIN + HEALTH_MAX;
+
+// Снимок и одно показание худшего размера влезают в любую датаграмму ⇒
+// отправитель всегда продвигается, даже если в бэклоге только худшие показания.
+const _: () = assert!(MIN_PLAIN_WITH_HEALTH <= crate::datagram::PLAIN_CAPACITY);
 
 /// Жадный кодировщик открытого текста одной датаграммы. Пишет в `buf`
 /// без аллокаций; показание добавляется, пока остаток ≥ `READING_MAX`.
@@ -249,6 +294,22 @@ impl<'a> Encoder<'a> {
         true
     }
 
+    /// Добавить снимок журнала здоровья. `false` — места нет. Отправитель
+    /// кладёт его первым: тогда за ним всегда влезает хотя бы одно показание.
+    pub fn push_health(&mut self, snapshot: &Snapshot) -> bool {
+        if self.buf.len() - self.len < HEALTH_MAX {
+            return false;
+        }
+        self.buf[self.len] = EXTENDED | KIND_HEALTH;
+        self.len += 1;
+        self.put_varint(u64::from(crate::health::LAYOUT));
+        self.put_varint(SNAPSHOT_WORDS as u64);
+        for word in snapshot.0 {
+            self.put_varint(u64::from(word));
+        }
+        true
+    }
+
     fn put_varint(&mut self, mut v: u64) {
         // Место проверено до записи (`new` / `push` под READING_MAX).
         while v >= 0x80 {
@@ -273,11 +334,15 @@ pub enum CodecError {
     ReservedPresence(u8),
     /// Значение канала после дельты вне диапазона его типа.
     OutOfRange,
+    /// Расширенная запись неизвестного вида.
+    UnknownRecord(u8),
+    /// Снимок здоровья длиннее `HEALTH_WORDS_MAX` слов.
+    HealthTooLong(u64),
 }
 
-/// Итератор показаний одной датаграммы, без аллокаций. После первой ошибки
+/// Итератор записей одной датаграммы, без аллокаций. После первой ошибки
 /// больше ничего не отдаёт.
-pub struct Readings<'a> {
+pub struct Records<'a> {
     rest:      &'a [u8],
     prev_time: EpochMillis,
     prev:      [i64; CHANNELS],
@@ -289,10 +354,10 @@ pub struct Readings<'a> {
 /// # Errors
 ///
 /// Возвращает `CodecError::Truncated`, если в тексте нет полного `base_time`.
-pub fn decode(plain: &[u8]) -> Result<Readings<'_>, CodecError> {
+pub fn decode(plain: &[u8]) -> Result<Records<'_>, CodecError> {
     let mut rest = plain;
     let base = take_varint(&mut rest)?;
-    Ok(Readings {
+    Ok(Records {
         rest,
         prev_time: EpochMillis(base),
         prev: [0; CHANNELS],
@@ -318,10 +383,35 @@ fn take_varint(rest: &mut &[u8]) -> Result<u64, CodecError> {
     Err(CodecError::VarintOverflow)
 }
 
-impl Readings<'_> {
-    fn next_reading(&mut self) -> Result<Reading, CodecError> {
-        let (&presence, tail) = self.rest.split_first().ok_or(CodecError::Truncated)?;
+fn take_u32(rest: &mut &[u8]) -> Result<u32, CodecError> {
+    u32::try_from(take_varint(rest)?).map_err(|_| CodecError::OutOfRange)
+}
+
+impl Records<'_> {
+    fn next_record(&mut self) -> Result<Record, CodecError> {
+        let (&first, tail) = self.rest.split_first().ok_or(CodecError::Truncated)?;
         self.rest = tail;
+        if first & EXTENDED == 0 {
+            return self.next_reading(first).map(Record::Reading);
+        }
+        if first != EXTENDED | KIND_HEALTH {
+            return Err(CodecError::UnknownRecord(first));
+        }
+        let layout = take_u32(&mut self.rest)?;
+        let n = take_varint(&mut self.rest)?;
+        if n > HEALTH_WORDS_MAX as u64 {
+            return Err(CodecError::HealthTooLong(n));
+        }
+        let mut words = heapless::Vec::new();
+        for _ in 0..n {
+            words
+                .push(take_u32(&mut self.rest)?)
+                .expect("n is checked against the capacity above");
+        }
+        Ok(Record::Health(HealthRecord { layout, words }))
+    }
+
+    fn next_reading(&mut self, presence: u8) -> Result<Reading, CodecError> {
         if presence & RESERVED_PRESENCE != 0 {
             return Err(CodecError::ReservedPresence(presence));
         }
@@ -342,14 +432,14 @@ impl Readings<'_> {
     }
 }
 
-impl Iterator for Readings<'_> {
-    type Item = Result<Reading, CodecError>;
+impl Iterator for Records<'_> {
+    type Item = Result<Record, CodecError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.failed || self.rest.is_empty() {
             return None;
         }
-        let item = self.next_reading();
+        let item = self.next_record();
         self.failed = item.is_err();
         Some(item)
     }

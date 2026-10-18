@@ -21,9 +21,16 @@ use meteo_core::datagram::{
     plain_area,
     seal,
 };
+use meteo_core::health::{
+    SNAPSHOT_WORDS,
+    Snapshot,
+    Word,
+};
 use meteo_core::recv_window::SeqStatus;
 use meteo_core::server::{
     BOOT_IDLE_FORGET,
+    HealthChange,
+    HealthLog,
     LiveLease,
     Server,
 };
@@ -68,7 +75,7 @@ fn nothing_to_ack_before_ingest() {
     let mut dg = datagram(5, 1, true);
     let inc = server.receive(&mut dg, T0).unwrap();
     assert!(!inc.duplicate);
-    assert_eq!(inc.collect_readings().unwrap(), vec![reading(1)]);
+    assert_eq!(inc.collect().unwrap().readings, vec![reading(1)]);
     // Запись не удалась ⇒ ingested не зван ⇒ подтверждать нечего.
     assert!(server.ack(BootId(5), LiveSecs::OFF).is_none());
 
@@ -146,4 +153,65 @@ fn live_lease() {
     lease.request(T0.checked_sub(Duration::from_secs(1)).unwrap(), lease_len);
     assert_eq!(lease.remaining(T0), LiveSecs(300));
     assert_eq!(lease.remaining(T0 + lease_len), LiveSecs::OFF);
+}
+
+fn health_snapshot(generation: u32, boots: u32, scd_timeouts: u32) -> Snapshot {
+    let mut words = [0u32; SNAPSHOT_WORDS];
+    for (slot, word) in words.iter_mut().zip(Word::snapshot_fields()) {
+        *slot = match word {
+            Word::Generation => generation,
+            Word::BootTotal => boots,
+            Word::Scd41Timeout => scd_timeouts,
+            _ => 0,
+        };
+    }
+    Snapshot(words)
+}
+
+#[test]
+fn health_log_orders_snapshots_per_boot() {
+    let mut log = HealthLog::new();
+    let first = log.accept(BootId(1), health_snapshot(3, 1, 0)).unwrap();
+    assert_eq!(
+        first,
+        vec![HealthChange {
+            word: Word::BootTotal,
+            was:  0,
+            now:  1,
+        }],
+        "first snapshot lists every nonzero field"
+    );
+
+    let moved = log.accept(BootId(1), health_snapshot(5, 1, 2)).unwrap();
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].to_string(), "scd41.timeout +2 (=2)");
+
+    // Опоздавший снимок той же загрузки — пропуск.
+    assert!(log.accept(BootId(1), health_snapshot(4, 1, 1)).is_none());
+    assert!(log.accept(BootId(1), health_snapshot(5, 1, 2)).is_none());
+
+    // Новая загрузка после reset: журнал продолжен, сравнение с прошлым.
+    let after_reset = log.accept(BootId(2), health_snapshot(6, 2, 2)).unwrap();
+    assert_eq!(after_reset[0].to_string(), "boot.total +1 (=2)");
+
+    // Подача питания: журнал обнулён ⇒ всё заново, без ложных «−».
+    let power_on = log.accept(BootId(3), health_snapshot(1, 1, 0)).unwrap();
+    assert_eq!(power_on.len(), 1);
+    assert_eq!(power_on[0].to_string(), "boot.total +1 (=1)");
+}
+
+#[test]
+fn health_values_are_decoded_for_the_log() {
+    let change = |word, now| HealthChange { word, was: 0, now }.to_string();
+    assert_eq!(
+        change(Word::Scd41LastOp, 7),
+        "scd41.last_op = 7 (scd41.data_ready)"
+    );
+    assert_eq!(change(Word::Scd41LastFault, 1), "scd41.last_fault = 1 (timeout)");
+    assert_eq!(change(Word::StallTasks, 1), "stall.tasks = 1 (sensor)");
+    assert_eq!(change(Word::StallNetStage, 3), "stall.net_stage = 3 (send)");
+    assert_eq!(
+        change(Word::StallEpochS, 1_760_000_000),
+        "stall.epoch_s = 1760000000"
+    );
 }

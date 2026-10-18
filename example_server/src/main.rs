@@ -18,7 +18,9 @@
 //!   The nonce is built from the header, so loss, reordering and duplicates do
 //!   not matter to decryption.
 //! - Plaintext: fixed-point readings, delta + varint encoded within one
-//!   datagram (`meteo_core::codec`).
+//!   datagram (`meteo_core::codec`), optionally led by a health snapshot —
+//!   fault counters, boot causes and the last stall site, kept by the
+//!   firmware across resets (`meteo_core::health`).
 //! - Datagrams with `ACK_REQ` are answered with an acknowledgement *after* the
 //!   readings are stored: a window of which sequence numbers of that boot are
 //!   stored, plus how long the firmware should stay in live mode (send every
@@ -51,12 +53,20 @@ use chrono::{
     TimeZone,
     Utc,
 };
-use meteo_core::codec::Reading;
+use meteo_core::codec::{
+    HealthRecord,
+    Reading,
+};
 use meteo_core::datagram::{
+    BootId,
     LiveSecs,
     ServerSalt,
 };
-use meteo_core::server::Server;
+use meteo_core::health::Snapshot;
+use meteo_core::server::{
+    HealthLog,
+    Server,
+};
 use meteo_core::wire::{
     EpochMillis,
     LEN_PREFIX,
@@ -122,6 +132,7 @@ fn print_readings(addr: &SocketAddr, readings: &[Reading]) {
 async fn serve_udp(socket: UdpSocket, live_for: LiveSecs) -> anyhow::Result<()> {
     let salt = ServerSalt(getrandom::u32().map_err(|e| anyhow::anyhow!("no OS randomness: {e}"))?);
     let mut server = Server::new(Aes128Gcm::new(&KEY.into()), salt);
+    let mut health_log = HealthLog::new();
     let started = Instant::now();
     let mut buf = vec![0u8; UDP_BUF];
 
@@ -143,8 +154,8 @@ async fn serve_udp(socket: UdpSocket, live_for: LiveSecs) -> anyhow::Result<()> 
                 boot.0, seq.0
             );
         } else {
-            let readings = match incoming.collect_readings() {
-                Ok(readings) => readings,
+            let contents = match incoming.collect() {
+                Ok(contents) => contents,
                 Err(e) => {
                     eprintln!("[{addr}] boot {:08x} #{}: undecodable: {e:?}", boot.0, seq.0);
                     continue;
@@ -154,9 +165,12 @@ async fn serve_udp(socket: UdpSocket, live_for: LiveSecs) -> anyhow::Result<()> 
                 "[{addr}] boot {:08x} #{}: {} reading(s)",
                 boot.0,
                 seq.0,
-                readings.len()
+                contents.readings.len()
             );
-            print_readings(&addr, &readings);
+            print_readings(&addr, &contents.readings);
+            if let Some(record) = &contents.health {
+                print_health(&addr, &mut health_log, boot, record);
+            }
 
             // >>> Plug your backend here: store `readings` (idempotently by
             //     `time`). Call `ingested` ONLY after the store succeeded; on
@@ -166,6 +180,29 @@ async fn serve_udp(socket: UdpSocket, live_for: LiveSecs) -> anyhow::Result<()> 
 
         if ack_req && let Some(ack) = server.ack(boot, live_for) {
             socket.send_to(&ack, addr).await.context("UDP send ack")?;
+        }
+    }
+}
+
+/// Health snapshot: the firmware's fault counters, boot causes and last stall
+/// site. Prints what changed since the previous snapshot of this board.
+fn print_health(addr: &SocketAddr, log: &mut HealthLog, boot: BootId, record: &HealthRecord) {
+    let Some(snapshot) = Snapshot::from_record(record) else {
+        println!(
+            "[{addr}] health: layout {} with {} words (other firmware version): {:?}",
+            record.layout,
+            record.words.len(),
+            record.words
+        );
+        return;
+    };
+    match log.accept(boot, snapshot) {
+        None => {}
+        Some(changes) if changes.is_empty() => {}
+        Some(changes) => {
+            for change in changes {
+                println!("[{addr}] health: {change}");
+            }
         }
     }
 }

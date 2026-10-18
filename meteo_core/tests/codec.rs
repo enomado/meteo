@@ -2,15 +2,23 @@ use meteo_core::codec::{
     CentiPascal,
     CodecError,
     Encoder,
+    HEALTH_MAX,
     MIN_PLAIN,
+    MIN_PLAIN_WITH_HEALTH,
     MilliCelsius,
     MilliPercentRh,
     Ppm,
     READING_MAX,
     Reading,
+    Record,
     decode,
 };
 use meteo_core::datagram::PLAIN_CAPACITY;
+use meteo_core::health::{
+    LAYOUT,
+    SNAPSHOT_WORDS,
+    Snapshot,
+};
 use meteo_core::wire::EpochMillis;
 use proptest::collection::vec;
 use proptest::prelude::*;
@@ -37,7 +45,16 @@ fn encode(readings: &[Reading], cap: usize) -> (Vec<u8>, usize) {
 }
 
 fn decode_all(plain: &[u8]) -> Result<Vec<Reading>, CodecError> {
-    decode(plain)?.collect()
+    decode(plain)?
+        .map(|record| {
+            record.map(|record| {
+                match record {
+                    Record::Reading(r) => r,
+                    Record::Health(h) => panic!("unexpected health record {h:?}"),
+                }
+            })
+        })
+        .collect()
 }
 
 #[test]
@@ -174,6 +191,97 @@ fn malformed_plaintext_is_an_error() {
     );
     // Показание оборвано посреди каналов.
     assert_eq!(decode_all(&[0, 0x03, 0, 0x02]).err(), Some(CodecError::Truncated));
+}
+
+fn snapshot(seed: u32) -> Snapshot {
+    let mut words = [0u32; SNAPSHOT_WORDS];
+    for (i, w) in words.iter_mut().enumerate() {
+        *w = seed.wrapping_mul(u32::try_from(i).unwrap() + 1);
+    }
+    words[SNAPSHOT_WORDS - 1] = u32::MAX;
+    Snapshot(words)
+}
+
+/// Снимок первым, показания за ним: цепочка дельт показаний не тронута.
+#[test]
+fn health_record_roundtrips_before_readings() {
+    let a = full(1_758_000_000_000, 100, 800);
+    let b = full(1_758_000_030_000, 105, 812);
+    let snap = snapshot(0x1234_5678);
+    let mut buf = vec![0u8; PLAIN_CAPACITY];
+    let mut enc = Encoder::new(&mut buf, a.time);
+    assert!(enc.push_health(&snap));
+    assert!(enc.push(&a));
+    assert!(enc.push(&b));
+    let len = enc.plain_len();
+    let records: Vec<Record> = decode(&buf[..len]).unwrap().collect::<Result<_, _>>().unwrap();
+    let Record::Health(h) = &records[0] else {
+        panic!("first record is {:?}", records[0])
+    };
+    assert_eq!(h.layout, LAYOUT);
+    assert_eq!(Snapshot::from_record(h), Some(snap));
+    assert_eq!(records[1..], [Record::Reading(a), Record::Reading(b)]);
+}
+
+/// Датаграмма из одного снимка (датчики мертвы): база времени — ноль.
+#[test]
+fn health_only_plaintext_decodes() {
+    let snap = snapshot(7);
+    let mut buf = vec![0u8; MIN_PLAIN_WITH_HEALTH];
+    let mut enc = Encoder::new(&mut buf, EpochMillis(0));
+    assert!(enc.push_health(&snap));
+    let len = enc.plain_len();
+    assert!(len <= 1 + HEALTH_MAX);
+    let records: Vec<Record> = decode(&buf[..len]).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(records.len(), 1);
+    let Record::Health(h) = &records[0] else {
+        panic!("not a health record")
+    };
+    assert_eq!(Snapshot::from_record(h), Some(snap));
+}
+
+#[test]
+fn foreign_layout_is_kept_raw() {
+    // base 0, снимок раскладки 99 из двух слов.
+    let records: Vec<Record> = decode(&[0, 0x80, 99, 2, 5, 6])
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let Record::Health(h) = &records[0] else {
+        panic!("not a health record")
+    };
+    assert_eq!((h.layout, h.words.as_slice()), (99, &[5, 6][..]));
+    assert_eq!(Snapshot::from_record(h), None);
+}
+
+#[test]
+fn malformed_extended_records_are_errors() {
+    assert_eq!(
+        decode(&[0, 0x81]).unwrap().next(),
+        Some(Err(CodecError::UnknownRecord(0x81)))
+    );
+    // n = 97 > HEALTH_WORDS_MAX.
+    assert_eq!(
+        decode(&[0, 0x80, 1, 97]).unwrap().next(),
+        Some(Err(CodecError::HealthTooLong(97)))
+    );
+    // Слово вне u32: 2³².
+    assert_eq!(
+        decode(&[0, 0x80, 1, 1, 0x80, 0x80, 0x80, 0x80, 0x10])
+            .unwrap()
+            .next(),
+        Some(Err(CodecError::OutOfRange))
+    );
+    // Оборвано посреди слов.
+    assert_eq!(
+        decode(&[0, 0x80, 1, 3, 5]).unwrap().next(),
+        Some(Err(CodecError::Truncated))
+    );
+    // Бит 6 у байта присутствия по-прежнему зарезервирован.
+    assert_eq!(
+        decode_all(&[0, 0x40]).err(),
+        Some(CodecError::ReservedPresence(0x40))
+    );
 }
 
 #[test]

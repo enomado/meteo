@@ -13,14 +13,17 @@
 
 use core::time::Duration;
 use std::collections::HashMap;
+use std::string::String;
 use std::vec::Vec;
 
 use aes_gcm::Aes128Gcm;
 
 use crate::codec::{
     CodecError,
+    HealthRecord,
     Reading,
-    Readings,
+    Record,
+    Records,
     decode,
 };
 use crate::datagram::{
@@ -35,9 +38,22 @@ use crate::datagram::{
     ServerSalt,
     open_up,
 };
+use crate::health::{
+    Kind,
+    NetStage,
+    STALL_EXECUTOR,
+    STALL_NET,
+    STALL_SENSOR,
+    Snapshot,
+    Word,
+};
 use crate::recv_window::{
     RecvWindow,
     SeqStatus,
+};
+use crate::sensors::{
+    Fault,
+    OpCode,
 };
 
 /// Окно загрузки без датаграмм дольше этого — забывается.
@@ -58,23 +74,122 @@ pub struct Incoming<'a> {
     pub ack_req:   bool,
     /// Уже записана в базу: писать повторно не нужно, подтвердить — да.
     pub duplicate: bool,
-    /// Показания; ошибка разбора посреди — вся датаграмма отвергается до
-    /// записи (см. [`Incoming::collect_readings`]).
-    pub readings:  Readings<'a>,
+    /// Записи; ошибка разбора посреди — вся датаграмма отвергается до
+    /// записи (см. [`Incoming::collect`]).
+    pub records:   Records<'a>,
+}
+
+/// Разобранное содержимое датаграммы.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contents {
+    pub readings: Vec<Reading>,
+    /// Снимок журнала здоровья, если прошивка его приложила.
+    pub health:   Option<HealthRecord>,
 }
 
 impl Incoming<'_> {
-    /// Все показания или первая ошибка разбора: частично записанная
+    /// Всё содержимое или первая ошибка разбора: частично записанная
     /// датаграмма была бы хуже отвергнутой целиком.
     ///
     /// # Errors
     ///
-    /// Возвращает [`ServerError::Codec`], если хотя бы одно показание
-    /// не удалось разобрать.
-    pub fn collect_readings(self) -> Result<Vec<Reading>, ServerError> {
-        self.readings
-            .collect::<Result<_, _>>()
-            .map_err(ServerError::Codec)
+    /// Возвращает [`ServerError::Codec`], если хотя бы одна запись не
+    /// разбирается.
+    pub fn collect(self) -> Result<Contents, ServerError> {
+        let mut contents = Contents {
+            readings: Vec::new(),
+            health:   None,
+        };
+        for record in self.records {
+            match record.map_err(ServerError::Codec)? {
+                Record::Reading(r) => contents.readings.push(r),
+                Record::Health(h) => contents.health = Some(h),
+            }
+        }
+        Ok(contents)
+    }
+}
+
+/// Последний принятый снимок здоровья платы и что в нём изменилось.
+///
+/// Порядок: внутри одной загрузки (`BootId`) поколение растёт ⇒ снимок не
+/// новее последнего — опоздавший дубль или перестановка, пропускаем. Новая
+/// загрузка принимается всегда (журнал переживает reset и продолжается).
+/// Подача питания обнуляет журнал: счётчик загрузок упал ⇒ сравнивать не с
+/// чем, изменения — все ненулевые поля.
+#[derive(Debug, Default)]
+pub struct HealthLog {
+    last: Option<(BootId, Snapshot)>,
+}
+
+/// Изменение одного поля снимка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HealthChange {
+    pub word: Word,
+    pub was:  u32,
+    pub now:  u32,
+}
+
+impl HealthLog {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Принять снимок загрузки `boot`. `None` — снимок не новее последнего.
+    pub fn accept(&mut self, boot: BootId, snapshot: Snapshot) -> Option<Vec<HealthChange>> {
+        let prev = match &self.last {
+            Some((last_boot, last)) if *last_boot == boot && snapshot.generation() <= last.generation() => {
+                return None;
+            }
+            Some((_, last)) if snapshot.get(Word::BootTotal) < last.get(Word::BootTotal) => None,
+            Some((_, last)) => Some(*last),
+            None => None,
+        };
+        let changes = snapshot
+            .changes(prev.as_ref())
+            .map(|(word, was, now)| HealthChange { word, was, now })
+            .collect();
+        self.last = Some((boot, snapshot));
+        Some(changes)
+    }
+}
+
+impl core::fmt::Display for HealthChange {
+    /// `scd41.timeout +1 (=3)` для счётчиков; значения — с расшифровкой кода.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let name = self.word.name();
+        if self.word.kind() == Kind::Counter {
+            return write!(f, "{name} +{} (={})", self.now.wrapping_sub(self.was), self.now);
+        }
+        write!(f, "{name} = {}", self.now)?;
+        decode_value(self.word, self.now).map_or(Ok(()), |meaning| write!(f, " ({meaning})"))
+    }
+}
+
+/// Расшифровка кодов в значениях журнала.
+fn decode_value(word: Word, value: u32) -> Option<String> {
+    match word {
+        Word::Scd41LastOp | Word::Bmp390LastOp | Word::StallSensorStage => Some(OpCode(value).name().into()),
+        Word::Scd41LastFault | Word::Bmp390LastFault => Some(Fault::name_of(value).into()),
+        Word::StallNetStage => Some(NetStage::name_of(value).into()),
+        Word::StallTasks => {
+            let names: Vec<&str> = [
+                (STALL_SENSOR, "sensor"),
+                (STALL_NET, "net"),
+                (STALL_EXECUTOR, "executor"),
+            ]
+            .into_iter()
+            .filter(|(bit, _)| value & bit != 0)
+            .map(|(_, name)| name)
+            .collect();
+            Some(if names.is_empty() {
+                "none".into()
+            } else {
+                names.join("+")
+            })
+        }
+        _ => None,
     }
 }
 
@@ -131,7 +246,7 @@ impl Server {
         now: Duration,
     ) -> Result<Incoming<'a>, ServerError> {
         let uplink = open_up(&self.cipher, datagram).map_err(ServerError::Datagram)?;
-        let readings = decode(uplink.plaintext).map_err(ServerError::Codec)?;
+        let records = decode(uplink.plaintext).map_err(ServerError::Codec)?;
 
         // Только подлинные датаграммы продлевают жизнь окнам.
         self.boots
@@ -150,7 +265,7 @@ impl Server {
             seq: uplink.header.seq,
             ack_req: uplink.header.ack_req,
             duplicate,
-            readings,
+            records,
         })
     }
 

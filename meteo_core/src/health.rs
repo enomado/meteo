@@ -23,6 +23,7 @@ use portable_atomic::{
     Ordering,
 };
 
+use crate::codec::HealthRecord;
 use crate::sensors::{
     Fault,
     OpCode,
@@ -213,6 +214,19 @@ impl NetStage {
     pub const fn code(self) -> u32 {
         self as u32
     }
+
+    /// Имя по коду из журнала; 0 — этап не записан.
+    #[must_use]
+    pub const fn name_of(code: u32) -> &'static str {
+        match code {
+            0 => "none",
+            1 => "wait_link",
+            2 => "take_readings",
+            3 => "send",
+            4 => "wait",
+            _ => "unknown",
+        }
+    }
 }
 
 /// Что сделал [`Health::attach`] с памятью.
@@ -229,6 +243,16 @@ pub enum Attach {
 pub struct Snapshot(pub [u32; SNAPSHOT_WORDS]);
 
 impl Snapshot {
+    /// Снимок своей раскладки из записи датаграммы; `None` — раскладка или
+    /// число слов чужие (прошивка другой версии).
+    #[must_use]
+    pub fn from_record(record: &HealthRecord) -> Option<Self> {
+        if record.layout != LAYOUT {
+            return None;
+        }
+        record.words.as_slice().try_into().ok().map(Self)
+    }
+
     #[must_use]
     pub fn generation(&self) -> u32 {
         self.get(Word::Generation)

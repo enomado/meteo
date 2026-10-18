@@ -17,7 +17,10 @@
 //! 3. нет двух датаграмм с одинаковым (направление, id, счётчик) — nonce;
 //! 4. живой режим включается не позже `BATCH_INTERVAL + 30 с` после запроса
 //!    (без потерь) и гаснет не позже срока, выданного сервером;
-//! 5. трафик без потерь: батч ≤ 50 Б/показание, живой ≤ 90 Б/показание (IP).
+//! 5. трафик без потерь: батч ≤ 50 Б/показание, живой ≤ 90 Б/показание (IP);
+//! 6. снимки журнала здоровья: изредка новое поколение, прошивка повторяет
+//!    тот же снимок каждый оборот; после заживления у приёмника последний
+//!    снимок прошивки (снимок принимается только вместе с записью датаграммы).
 
 use core::time::Duration;
 use std::collections::{
@@ -48,6 +51,10 @@ use meteo_core::datagram::{
     ServerSalt,
     parse_header,
 };
+use meteo_core::health::{
+    SNAPSHOT_WORDS,
+    Snapshot,
+};
 use meteo_core::sender::{
     BATCH_INTERVAL,
     Backlog,
@@ -55,6 +62,7 @@ use meteo_core::sender::{
     Sender,
 };
 use meteo_core::server::{
+    HealthLog,
     LiveLease,
     Server,
 };
@@ -134,6 +142,8 @@ struct Coverage {
     evictions:         AtomicU64,
     multi_datagram:    AtomicU64,
     ntp_steps_back:    AtomicU64,
+    health_delivered:  AtomicU64,
+    health_only:       AtomicU64,
 }
 
 fn bump(c: &AtomicU64) {
@@ -198,37 +208,43 @@ const CALM: Chaos = Chaos {
 };
 
 struct World<'c> {
-    rng:        Rng,
-    cov:        &'c Coverage,
-    chaos:      Chaos,
-    now:        u64,
-    sender:     Sender<'c>,
-    server:     Server,
-    salt:       u32,
-    lease:      LiveLease,
+    rng:           Rng,
+    cov:           &'c Coverage,
+    chaos:         Chaos,
+    now:           u64,
+    sender:        Sender<'c>,
+    server:        Server,
+    salt:          u32,
+    lease:         LiveLease,
     /// Самый поздний срок живого режима, который сервер когда-либо выдал.
-    lease_max:  Duration,
+    lease_max:     Duration,
     /// Страница живого графика открыта: следующий запрос в этот момент.
-    live_poll:  Option<u64>,
-    wifi:       Wifi,
-    ingest:     Ingest,
-    producing:  bool,
-    next_read:  u64,
-    next_event: u64,
+    live_poll:     Option<u64>,
+    wifi:          Wifi,
+    ingest:        Ingest,
+    producing:     bool,
+    next_read:     u64,
+    next_event:    u64,
     /// В полёте: (время прибытия, порядок) → (куда, байты).
-    net:        BTreeMap<(u64, u64), (Dest, Vec<u8>)>,
-    net_order:  u64,
-    max_seq_rx: u32,
-    walk:       [i64; 5],
-    produced:   BTreeMap<u64, Reading>,
-    evicted:    BTreeSet<u64>,
-    db:         BTreeMap<u64, Reading>,
+    net:           BTreeMap<(u64, u64), (Dest, Vec<u8>)>,
+    net_order:     u64,
+    max_seq_rx:    u32,
+    walk:          [i64; 5],
+    produced:      BTreeMap<u64, Reading>,
+    evicted:       BTreeSet<u64>,
+    db:            BTreeMap<u64, Reading>,
     /// Когда показание впервые попало в базу.
-    stored_at:  BTreeMap<u64, u64>,
-    nonces:     HashSet<Nonce>,
+    stored_at:     BTreeMap<u64, u64>,
+    nonces:        HashSet<Nonce>,
     /// Байты на уровне IP в обе стороны.
-    ip_bytes:   u64,
-    was_live:   LiveState,
+    ip_bytes:      u64,
+    was_live:      LiveState,
+    /// Последний снимок журнала здоровья прошивки.
+    health:        Option<Snapshot>,
+    /// Учёт снимков процесса приёмника (сбрасывается рестартом).
+    health_log:    HealthLog,
+    /// Самый новый снимок, принятый приёмником за весь прогон.
+    server_health: Option<Snapshot>,
 }
 
 impl<'c> World<'c> {
@@ -260,7 +276,21 @@ impl<'c> World<'c> {
             nonces: HashSet::new(),
             ip_bytes: 0,
             was_live: LiveState::Off,
+            health: None,
+            health_log: HealthLog::new(),
+            server_health: None,
         }
+    }
+
+    /// Журнал здоровья изменился: новое поколение, одно поле сдвинулось.
+    fn new_health(&mut self) {
+        let mut words = self.health.map_or([0; SNAPSHOT_WORDS], |s| s.0);
+        words[0] += 1;
+        let field = 1 + usize::try_from(self.rng.below(SNAPSHOT_WORDS as u64 - 1)).expect("index fits usize");
+        words[field] += 1;
+        let snapshot = Snapshot(words);
+        self.health = Some(snapshot);
+        self.sender.on_health(snapshot);
     }
 
     fn uptime(&self) -> Uptime {
@@ -360,6 +390,12 @@ impl<'c> World<'c> {
             self.evicted.insert(old.time.0);
             bump(&self.cov.evictions);
         }
+        // Прошивка зовёт `on_health` каждый оборот, чаще всего с тем же снимком.
+        if self.rng.chance(3) {
+            self.new_health();
+        } else if let Some(same) = self.health {
+            self.sender.on_health(same);
+        }
     }
 
     /// Датаграмма дошла до приёмника: порядок как у настоящего — проверка,
@@ -379,9 +415,11 @@ impl<'c> World<'c> {
         if duplicate {
             bump(&self.cov.server_duplicates);
         } else {
-            let readings = inc
-                .collect_readings()
+            let contents = inc
+                .collect()
                 .map_err(|e| format!("datagram {seq:?} does not decode: {e:?}"))?;
+            let readings = contents.readings;
+            let empty = readings.is_empty();
             if self.ingest == Ingest::Unavailable {
                 bump(&self.cov.ingest_failures);
                 return Ok(());
@@ -401,6 +439,21 @@ impl<'c> World<'c> {
                 self.db.insert(t, r);
                 self.stored_at.entry(t).or_insert(self.now);
             }
+            if let Some(record) = contents.health {
+                let snapshot = Snapshot::from_record(&record)
+                    .ok_or_else(|| format!("foreign health layout {record:?}"))?;
+                if empty {
+                    bump(&self.cov.health_only);
+                }
+                if self.health_log.accept(boot, snapshot).is_some()
+                    && self
+                        .server_health
+                        .is_none_or(|s| snapshot.generation() > s.generation())
+                {
+                    bump(&self.cov.health_delivered);
+                    self.server_health = Some(snapshot);
+                }
+            }
             self.server.ingested(boot, seq, now);
         }
         if ack_req {
@@ -418,7 +471,10 @@ impl<'c> World<'c> {
                 self.wifi = match self.wifi {
                     Wifi::Up => Wifi::Down,
                     Wifi::Down => Wifi::Up,
-                }
+                };
+                // Прошивка считает обрывы Wi-Fi в журнале — снимок меняется и
+                // без новых показаний.
+                self.new_health();
             }
             2 | 3 => {
                 self.ingest = match self.ingest {
@@ -430,6 +486,7 @@ impl<'c> World<'c> {
                 self.salt += 1;
                 self.server = Server::new(cipher(), ServerSalt(self.salt));
                 self.lease = LiveLease::new();
+                self.health_log = HealthLog::new();
                 bump(&self.cov.server_restarts);
             }
             _ => {
@@ -500,6 +557,17 @@ impl<'c> World<'c> {
                     self.sender
                         .on_datagram(&mut bytes, self.uptime())
                         .map_err(|e| format!("firmware rejected an ack: {e:?}"))?;
+                    // Инвариант 6: «доставлен» — только то, что приёмник принял.
+                    let generation = |s: Option<Snapshot>| s.map_or(0, |s| s.generation());
+                    if self.sender.health_delivered()
+                        && generation(self.server_health) < generation(self.health)
+                    {
+                        return Err(format!(
+                            "health generation {} marked delivered, server has {}",
+                            generation(self.health),
+                            generation(self.server_health)
+                        ));
+                    }
                 }
             }
         }
@@ -592,6 +660,18 @@ impl<'c> World<'c> {
                 HEAL_LIMIT / HOUR
             ));
         }
+        // Датчики молчат, а журнал растёт (мёртвый датчик): снимок едет один.
+        self.new_health();
+        let end = self.now + HEAL_LIMIT;
+        self.run_until(end, |w| w.sender.health_delivered() && w.net.is_empty())?;
+        // Инвариант 6: у приёмника последний снимок журнала прошивки.
+        if self.server_health != self.health {
+            return Err(format!(
+                "server health generation {:?}, firmware {:?}",
+                self.server_health.map(|s| s.generation()),
+                self.health.map(|s| s.generation())
+            ));
+        }
         Ok(())
     }
 
@@ -678,6 +758,8 @@ fn every_reading_is_stored_or_evicted() {
         ("evictions", &cov.evictions),
         ("multi-datagram backlog drains", &cov.multi_datagram),
         ("NTP steps back", &cov.ntp_steps_back),
+        ("health snapshots delivered", &cov.health_delivered),
+        ("health-only datagrams", &cov.health_only),
     ];
     let seen = |c: &AtomicU64| c.load(Ordering::Relaxed);
     let report: Vec<String> = scenarios
