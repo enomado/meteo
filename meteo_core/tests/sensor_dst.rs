@@ -4,7 +4,9 @@
 //!
 //! Модель SCD41: idle/measuring, в low-power periodic данные раз в 30 ± 1 с,
 //! непрочитанные перезаписываются, `stop` сбрасывает буфер, `reinit` грузит
-//! смещение из «EEPROM». Модель BMP390: после инициализации `drdy` раз в 20 с.
+//! смещение из «EEPROM»; после `start` температура выше установившейся и сходит
+//! к ней за `SCD_WARMUP` (замер на плате). Модель BMP390: после инициализации
+//! `drdy` раз в 20 с.
 //! Драйвер исполняет операцию за её время исполнения; «зависание» — операция
 //! длится `op.timeout()` и возвращает `Timeout` (так делает драйвер прошивки).
 //!
@@ -75,6 +77,11 @@ const SCD_INTERVAL: u64 = 30 * SEC;
 const BARO_INTERVAL: u64 = 20 * SEC;
 /// Смещение температуры SCD41 по умолчанию (EEPROM), м°C.
 const EEPROM_OFFSET: i32 = 4000;
+/// Переходный процесс SCD41 после старта low-power замера (плата, 2026-10-18,
+/// два старта): первое показание на ~4 °C выше установившегося, через ~3.5 мин
+/// — в пределах 0.1 °C. Модель — линейный спад.
+const SCD_WARMUP: u64 = 210 * SEC;
+const SCD_WARMUP_C: f32 = 4.0;
 /// Инвариант 1.
 const MAX_CYCLE_GAP: u64 = 60 * SEC;
 /// Инвариант 5: от конца залипания до первых данных.
@@ -160,6 +167,8 @@ struct Episode {
 /// Модель SCD41.
 struct SimScd {
     measuring: bool,
+    /// Начало текущего замера (отсчёт переходного процесса).
+    started:   u64,
     next_data: u64,
     data:      Option<ScdRaw>,
     offset:    i32,
@@ -232,6 +241,7 @@ impl<'h> World<'h> {
             // После reset MCU датчик мог продолжать замер.
             scd: SimScd {
                 measuring: seed.is_multiple_of(2),
+                started:   0,
                 next_data: SCD_INTERVAL,
                 data:      None,
                 offset:    EEPROM_OFFSET,
@@ -301,7 +311,10 @@ impl<'h> World<'h> {
             self.scd.serial = self.scd.serial.wrapping_add(1);
             let garbage = self.rng.permille(self.scd_prof.garbage);
             let offset = i16::try_from(self.scd.offset).expect("SCD41 offset is a few °C in m°C");
-            let temp = ROOM_C + 1.5 - f32::from(offset) / 1000.0;
+            let warm_left_s = (SCD_WARMUP.saturating_sub(self.now - self.scd.started)) / SEC;
+            let warm_c = SCD_WARMUP_C * f32::from(u16::try_from(warm_left_s).expect("warm-up is minutes"))
+                / f32::from(u16::try_from(SCD_WARMUP / SEC).expect("warm-up is minutes"));
+            let temp = ROOM_C + 1.5 + warm_c - f32::from(offset) / 1000.0;
             self.scd.data = Some(ScdRaw {
                 co2:      400 + self.scd.serial % 1600,
                 temp_c:   if garbage { f32::NAN } else { temp },
@@ -409,6 +422,7 @@ impl<'h> World<'h> {
             }
             Op::ScdStart => {
                 self.scd.measuring = true;
+                self.scd.started = self.now;
                 self.scd.next_data = self.now + SCD_INTERVAL;
                 OpResult::Done
             }

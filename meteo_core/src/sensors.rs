@@ -17,8 +17,8 @@
 //! `get_data_ready_status`, `set_ambient_pressure`, `stop_periodic_measurement`.
 //!
 //! Цикл: SCD41 (опрос готовности раз в [`SCD_POLL`], чтение) → BMP390 →
-//! компенсация давления в SCD41 → разовая калибровка смещения температуры →
-//! [`Action::Cycle`]. Сбой ⇒ журнал; [`REINIT_AFTER`] сбоев подряд ⇒
+//! компенсация давления в SCD41 → разовая калибровка смещения температуры
+//! (не раньше [`SCD_WARMUP`] от старта замера) → [`Action::Cycle`]. Сбой ⇒ журнал; [`REINIT_AFTER`] сбоев подряд ⇒
 //! переинициализация датчика; неудачная ⇒ повтор через [`REINIT_BACKOFF`].
 //! Отказ одного датчика не прерывает опрос другого.
 
@@ -56,6 +56,12 @@ pub const SETTLE: Duration = Duration::from_secs(1);
 pub const REINIT_AFTER: u32 = 3;
 /// Пауза после неудачной инициализации перед следующей попыткой.
 pub const REINIT_BACKOFF: Duration = Duration::from_secs(60);
+/// Замер SCD41 идёт столько до калибровки смещения температуры.
+///
+/// После старта low-power замера температура ~3.5 мин
+/// сходит на ~4 °C (плата, 2026-10-18): калибровка по первому показанию
+/// завышала смещение на эти градусы, а влажность — на ~17 п.п.
+pub const SCD_WARMUP: Duration = Duration::from_secs(300);
 
 /// Диапазон компенсации давления SCD41, гПа (даташит: 700–1200 гПа).
 const SCD_PRESSURE_HPA: core::ops::RangeInclusive<f32> = 700.0..=1200.0;
@@ -356,6 +362,8 @@ struct Scd {
     not_before: Uptime,
     /// Последние данные или старт замера: отсчёт `SCD_STALE`.
     last_data:  Uptime,
+    /// Старт текущего замера: отсчёт `SCD_WARMUP` до калибровки.
+    started:    Uptime,
     /// `get_data_ready_status` ответил «готово»: следующая — чтение.
     ready:      bool,
     /// Смещение температуры в датчике сейчас.
@@ -451,6 +459,7 @@ impl Sensors {
                 failures:   0,
                 not_before: now,
                 last_data:  now,
+                started:    now,
                 ready:      false,
                 offset:     None,
                 calibrated: false,
@@ -590,7 +599,11 @@ impl Sensors {
                     _ => Op::ScdStart,
                 }))
             }
-            ScdPhase::Measuring if !self.scd.calibrated && !self.cycle.scd.failed => {
+            ScdPhase::Measuring
+                if !self.scd.calibrated
+                    && !self.cycle.scd.failed
+                    && now >= after(self.scd.started, SCD_WARMUP) =>
+            {
                 let offset = calibrated_offset(
                     self.cycle.scd_temp_raw?,
                     self.cycle.baro_temp_raw?,
@@ -638,6 +651,7 @@ impl Sensors {
             (Op::ScdStart, OpResult::Done) => {
                 self.scd.mode = ScdMode::Measuring;
                 self.scd.last_data = now;
+                self.scd.started = now;
                 self.scd.ready = false;
                 self.scd.not_before = after(now, SCD_POLL);
                 self.scd_advance(now, health);
