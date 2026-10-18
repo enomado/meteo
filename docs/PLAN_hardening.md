@@ -101,8 +101,8 @@ DoD: `cargo test --release --test ntp_dst` в `meteo_core` зелёный, те�
 передача доигрывает (на PCR-чипах, судя по коду, замёрзла бы). `flush` с #5836
 тоже no-op — дождаться хвоста нечем. Upstream main на 2026-10-18 тот же
 `8ef1b671`, дубля нет (родственные: #3242 — тот же фикс только для
-`transfer_in_place`, #5247, #5836). Черновик issue —
-[esp_hal_spi_cancel_issue_draft.md](esp_hal_spi_cancel_issue_draft.md).
+`transfer_in_place`, #5247, #5836). Заведено: esp-rs/esp-hal#6521. У себя не
+чиним: таймауты секундные, устройство на шине одно, C3.
 
 ## Ш3. Реакция NTP-цикла на Kiss-o'-Death — ✅ сделано
 
