@@ -28,14 +28,15 @@ use embassy_time::{
 };
 use esp_hal::rng::Rng;
 use esp_println::println;
+use esp_radio::wifi::event::EventInfo;
 use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{
     AuthenticationMethodConfig,
     Config,
-    DisconnectReason,
     Interface,
     WifiController,
+    WifiError,
 };
 use meteo_core::datagram::BootId;
 use meteo_core::health::{
@@ -177,72 +178,28 @@ pub fn station_config(network: Network<'_>) -> Config {
     )
 }
 
-/// Код причины обрыва Wi-Fi для журнала: номер IEEE 802.11 (1–68) или ESP
-/// (200+), те же числа, что разбирает `DisconnectReason::from_raw` esp-radio
-/// (наружу он сырой код не отдаёт). 0 — вариант новее этой прошивки.
-const fn disconnect_code(reason: DisconnectReason) -> u32 {
-    match reason {
-        DisconnectReason::Unspecified => 1,
-        DisconnectReason::AuthenticationExpired => 2,
-        DisconnectReason::AuthenticationLeave => 3,
-        DisconnectReason::DisassociatedDueToInactivity => 4,
-        DisconnectReason::AssociationTooMany => 5,
-        DisconnectReason::Class2FrameFromNonAuthenticatedStation => 6,
-        DisconnectReason::Class3FrameFromNonAssociatedStation => 7,
-        DisconnectReason::AssociationLeave => 8,
-        DisconnectReason::AssociationNotAuthenticated => 9,
-        DisconnectReason::DisassociatedPowerCapabilityBad => 10,
-        DisconnectReason::DisassociatedUnsupportedChannel => 11,
-        DisconnectReason::BssTransitionDisassociated => 12,
-        DisconnectReason::IeInvalid => 13,
-        DisconnectReason::MicFailure => 14,
-        DisconnectReason::FourWayHandshakeTimeout => 15,
-        DisconnectReason::GroupKeyUpdateTimeout => 16,
-        DisconnectReason::IeIn4wayDiffers => 17,
-        DisconnectReason::GroupCipherInvalid => 18,
-        DisconnectReason::PairwiseCipherInvalid => 19,
-        DisconnectReason::AkmpInvalid => 20,
-        DisconnectReason::UnsupportedRsnIeVersion => 21,
-        DisconnectReason::InvalidRsnIeCapabilities => 22,
-        DisconnectReason::_802_1xAuthenticationFailed => 23,
-        DisconnectReason::CipherSuiteRejected => 24,
-        DisconnectReason::TdlsPeerUnreachable => 25,
-        DisconnectReason::TdlsUnspecified => 26,
-        DisconnectReason::SspRequestedDisassociation => 27,
-        DisconnectReason::NoSspRoamingAgreement => 28,
-        DisconnectReason::BadCipherOrAkm => 29,
-        DisconnectReason::NotAuthorizedThisLocation => 30,
-        DisconnectReason::ServiceChangePercludesTs => 31,
-        DisconnectReason::UnspecifiedQos => 32,
-        DisconnectReason::NotEnoughBandwidth => 33,
-        DisconnectReason::MissingAcks => 34,
-        DisconnectReason::ExceededTxOp => 35,
-        DisconnectReason::StationLeaving => 36,
-        DisconnectReason::EndBlockAck => 37,
-        DisconnectReason::UnknownBlockAck => 38,
-        DisconnectReason::Timeout => 39,
-        DisconnectReason::PeerInitiated => 46,
-        DisconnectReason::AccessPointInitiatedDisassociation => 47,
-        DisconnectReason::InvalidFtActionFrameCount => 48,
-        DisconnectReason::InvalidPmkid => 49,
-        DisconnectReason::InvalidMde => 50,
-        DisconnectReason::InvalidFte => 51,
-        DisconnectReason::TransmissionLinkEstablishmentFailed => 67,
-        DisconnectReason::AlterativeChannelOccupied => 68,
-        DisconnectReason::BeaconTimeout => 200,
-        DisconnectReason::NoAccessPointFound => 201,
-        DisconnectReason::AuthenticationFailed => 202,
-        DisconnectReason::AssociationFailed => 203,
-        DisconnectReason::HandshakeTimeout => 204,
-        DisconnectReason::ConnectionFailed => 205,
-        DisconnectReason::AccessPointTsfReset => 206,
-        DisconnectReason::Roaming => 207,
-        DisconnectReason::AssociationComebackTimeTooLong => 208,
-        DisconnectReason::SaQueryTimeout => 209,
-        DisconnectReason::NoAccessPointFoundWithCompatibleSecurity => 210,
-        DisconnectReason::NoAccessPointFoundInAuthmodeThreshold => 211,
-        DisconnectReason::NoAccessPointFoundInRssiThreshold => 212,
-        _ => 0,
+/// Ждёт обрыва Wi-Fi и отдаёт сырой код причины: номер IEEE 802.11 (1–68)
+/// или ESP (200+).
+///
+/// `wait_for_disconnect_async` отдаёт только `DisconnectReason`: неизвестный
+/// код там схлопнут в `Unspecified`, а номера из enum апстрим убрал намеренно
+/// (esp-hal#4923). Сырой код есть лишь в событии `StationDisconnected`
+/// (unstable API), поэтому ждём его сами — так же, как это делает
+/// `wait_for_disconnect_async`, но подписываемся ДО проверки `is_connected`:
+/// обрыв между проверкой и подпиской не теряется.
+async fn wait_for_disconnect_reason(controller: &WifiController<'static>) -> Result<u16, WifiError> {
+    // Подписчиков у канала событий два (ESP_RADIO_CONFIG_EVENT_CHANNEL_SUBSCRIBERS);
+    // connect/scan этой же таски к этому моменту свою подписку уже отпустили.
+    let mut events = controller.subscribe()?;
+    if !controller.is_connected() {
+        return Err(WifiError::NotConnected);
+    }
+    loop {
+        let event = events.next_event_pure().await;
+        if let EventInfo::StationDisconnected { reason, .. } = event {
+            println!("Disconnected: {:?}", event);
+            return Ok(reason);
+        }
     }
 }
 
@@ -266,13 +223,13 @@ pub async fn connection(mut controller: WifiController<'static>) {
             Ok(info) => {
                 println!("Wifi connected to {:?}", info);
                 clear_status(SYS_NO_WIFI);
-                let info = controller.wait_for_disconnect_async().await.ok();
-                println!("Disconnected: {:?}", info);
+                let reason = wait_for_disconnect_reason(&controller).await;
                 set_status(SYS_NO_WIFI);
                 let health = health();
                 health.bump(Word::WifiDisconnects);
-                if let Some(info) = info {
-                    health.set(Word::WifiLastReason, disconnect_code(info.reason));
+                match reason {
+                    Ok(reason) => health.set(Word::WifiLastReason, u32::from(reason)),
+                    Err(e) => println!("Disconnected, reason unknown: {:?}", e),
                 }
             }
             Err(e) => {
