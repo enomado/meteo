@@ -1,0 +1,27 @@
+[package]
+name = "meteo_core_fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Фаззинг приёмника с обратной связью по покрытию (`cargo fuzz run receiver`
+# в `meteo_core`). Отдельный крейт: libfuzzer-sys и arbitrary не должны
+# попадать в граф `meteo_core`.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
+arbitrary = { version = "1.4", features = ["derive"] }
+libfuzzer-sys = "0.4"
+meteo_core = { path = "..", features = ["std"] }
+
+[[bin]]
+name = "receiver"
+path = "fuzz_targets/receiver.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
