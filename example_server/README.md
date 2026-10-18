@@ -6,7 +6,7 @@ acknowledge them — so you can plug in whatever backend you like (database,
 queue, file, another service…).
 
 ```sh
-cargo run                          # listens on 0.0.0.0:1234 (UDP and TCP)
+cargo run                          # listens on 0.0.0.0:1234/udp
 METEO_LISTEN=0.0.0.0:5000 cargo run
 METEO_LIVE_SECS=300 cargo run      # ask the firmware for live mode in every ack
 ```
@@ -43,11 +43,3 @@ The receiver logic — verification, duplicate window, ack — is in
 own tests; `src/main.rs` is only the socket loop. To store readings, replace
 the `>>> Plug your backend here` section and call `ingested` only after the
 store succeeded.
-
-## Protocol v1 (TCP, older firmware)
-
-Still accepted until old firmware is retired:
-`[ u32 BE payload_len ][ AES-128-GCM ciphertext || tag ]` per packet,
-postcard-encoded `SensorData` batch (`../meteo_core/src/wire.rs`), nonce from
-a per-connection counter. The counter restarts on every reconnect, so the
-nonce repeats — v1 is not transport security.

@@ -31,13 +31,6 @@
 //! Receiver logic (verification, duplicate window, ack) lives in
 //! `meteo_core::server` and is shared with the production receiver; this file
 //! is only the socket loop.
-//!
-//! ## Protocol v1 (TCP, older firmware)
-//!
-//! `[ u32 BE payload_len ][ AES-128-GCM ciphertext || tag ]` per packet,
-//! postcard-encoded `SensorData` batch, nonce from a per-connection counter
-//! (repeats on every reconnect — not transport security). Kept until old
-//! firmware is gone.
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;
@@ -54,6 +47,7 @@ use chrono::{
     Utc,
 };
 use meteo_core::codec::{
+    EpochMillis,
     HealthRecord,
     Reading,
 };
@@ -67,21 +61,7 @@ use meteo_core::server::{
     HealthLog,
     Server,
 };
-use meteo_core::wire::{
-    EpochMillis,
-    LEN_PREFIX,
-    PacketCounter,
-    SensorBatch,
-    SensorData,
-    decode_payload,
-    payload_len,
-};
-use tokio::io::AsyncReadExt;
-use tokio::net::{
-    TcpListener,
-    TcpStream,
-    UdpSocket,
-};
+use tokio::net::UdpSocket;
 
 /// 16-byte AES-128 key shared with the firmware. This is the demo value
 /// (`config.toml` `secret_key = "73757065..."` == ASCII "supersecretkey!1").
@@ -207,75 +187,6 @@ fn print_health(addr: &SocketAddr, log: &mut HealthLog, boot: BootId, record: &H
     }
 }
 
-/// Read one length-prefixed, AES-GCM-encrypted, postcard-encoded v1 packet.
-async fn read_packet(
-    socket: &mut TcpStream,
-    cipher: &Aes128Gcm,
-    counter: PacketCounter,
-) -> anyhow::Result<SensorBatch> {
-    // 1) length prefix — range-checked before reading, so a malformed prefix
-    //    can't make us allocate wildly
-    let mut len_buf = [0u8; LEN_PREFIX];
-    socket.read_exact(&mut len_buf).await?;
-    let payload_len = payload_len(len_buf).map_err(|e| anyhow::anyhow!("bad frame: {e:?}"))?;
-
-    // 2) ciphertext || tag
-    let mut payload = vec![0u8; payload_len];
-    socket.read_exact(&mut payload).await?;
-
-    // 3) decrypt + decode
-    decode_payload(cipher, counter, &mut payload)
-        .map_err(|e| anyhow::anyhow!("{e:?}"))
-        .context("packet rejected (wrong key or out-of-sync nonce?)")
-}
-
-fn print_v1_readings(addr: &SocketAddr, packet: &[SensorData]) {
-    for s in packet {
-        let when = local_time(s.time);
-        if let Some(b) = &s.baro {
-            println!(
-                "[{addr}] {when}  P={:.1} hPa  T={:.2} °C",
-                b.pressure / 100.0,
-                b.temp
-            );
-        }
-        if let Some(sc) = &s.scd {
-            println!(
-                "[{addr}] {when}  CO2={} ppm  H={:.1}%  T={:.2} °C",
-                sc.co2, sc.humidity, sc.temp
-            );
-        }
-    }
-}
-
-async fn handle_tcp_client(mut stream: TcpStream, addr: SocketAddr) {
-    println!("[{addr}] v1 TCP client connected");
-    let cipher = Aes128Gcm::new(&KEY.into());
-    // firmware's per-connection counter starts at 1
-    let mut counter = PacketCounter::FIRST;
-
-    loop {
-        let packet = match read_packet(&mut stream, &cipher, counter).await {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[{addr}] disconnected: {e:?}");
-                break;
-            }
-        };
-
-        println!("[{addr}] packet #{}: {} reading(s)", counter.0, packet.len());
-        print_v1_readings(&addr, &packet);
-        counter = counter.next();
-    }
-}
-
-async fn serve_tcp(listener: TcpListener) -> anyhow::Result<()> {
-    loop {
-        let (socket, addr) = listener.accept().await?;
-        tokio::spawn(handle_tcp_client(socket, addr));
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listen = std::env::var("METEO_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
@@ -287,14 +198,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let udp = UdpSocket::bind(&listen).await?;
-    let tcp = TcpListener::bind(&listen).await?;
     println!(
-        "meteo example receiver on {listen}: v2 over UDP (live_for {} s), v1 over TCP",
+        "meteo example receiver on {listen}: v2 over UDP (live_for {} s)",
         live_for.0
     );
 
-    tokio::select! {
-        res = serve_udp(udp, live_for) => res,
-        res = serve_tcp(tcp) => res,
-    }
+    serve_udp(udp, live_for).await
 }

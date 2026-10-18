@@ -18,8 +18,8 @@ use sntpc::{
     NtpTimestampGenerator,
 };
 
+use crate::codec::EpochMillis;
 use crate::supervisor::Uptime;
-use crate::wire::EpochMillis;
 
 const MICROS_PER_SEC: u64 = 1_000_000;
 

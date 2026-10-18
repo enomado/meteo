@@ -3,12 +3,12 @@ use core::time::Duration;
 use meteo_core::backlog::Unsynced;
 use meteo_core::codec::{
     CentiPascal,
+    EpochMillis,
     MilliCelsius,
     Ppm,
 };
 use meteo_core::sensors::Sample;
 use meteo_core::supervisor::Uptime;
-use meteo_core::wire::EpochMillis;
 
 /// Epoch момента boot, который «вернул» NTP: 2026-10-18 12:00:00 UTC.
 const BOOT_EPOCH_MS: u64 = 1_792_324_800_000;

@@ -10,11 +10,10 @@ nursery = { level = "warn", priority = -1 }
 
 # Minimal reference receiver for the meteo firmware.
 # Protocol v2: UDP datagrams, acknowledged after the readings are stored.
-# Protocol v1 (TCP stream, older firmware) is still accepted until it is retired.
 # Plug your own backend where marked in `main.rs`.
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 aes-gcm = "0.11"
 anyhow = "1"
 # Protocol shared with the firmware; `std` enables the receiver side (`server`).

@@ -2,6 +2,7 @@ use meteo_core::codec::{
     CentiPascal,
     CodecError,
     Encoder,
+    EpochMillis,
     HEALTH_MAX,
     MIN_PLAIN,
     MIN_PLAIN_WITH_HEALTH,
@@ -19,7 +20,6 @@ use meteo_core::health::{
     SNAPSHOT_WORDS,
     Snapshot,
 };
-use meteo_core::wire::EpochMillis;
 use proptest::collection::vec;
 use proptest::prelude::*;
 

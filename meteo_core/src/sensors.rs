@@ -26,6 +26,7 @@ use core::time::Duration;
 
 use crate::codec::{
     CentiPascal,
+    EpochMillis,
     MilliCelsius,
     MilliPercentRh,
     Ppm,
@@ -33,7 +34,6 @@ use crate::codec::{
 };
 use crate::health::Health;
 use crate::supervisor::Uptime;
-use crate::wire::EpochMillis;
 
 /// Запас сверх времени исполнения команды на саму передачу по шине.
 pub const BUS_SLACK: Duration = Duration::from_secs(1);

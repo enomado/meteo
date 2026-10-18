@@ -33,6 +33,7 @@ use aes_gcm::Aes128Gcm;
 
 use crate::codec::{
     Encoder,
+    EpochMillis,
     Reading,
 };
 use crate::datagram::{
@@ -50,7 +51,6 @@ use crate::datagram::{
 use crate::health::Snapshot;
 use crate::recv_window::SeqStatus;
 use crate::supervisor::Uptime;
-use crate::wire::EpochMillis;
 
 /// Период батчей: компромисс трафика и задержки включения живого режима
 /// (сигнал едет в подтверждении батча).

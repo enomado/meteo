@@ -23,12 +23,7 @@ std = []
 aes-gcm = { version = "0.11.1", default-features = false, features = ["aes"] }
 # round() для перевода f32 в фиксированную точку без std.
 libm = "0.2.16"
-# serde: декодирование батча приёмником в тот же тип, что кодирует прошивка.
-heapless = { version = "0.9", features = ["serde"] }
-# experimental-derive: `#[derive(MaxSize)]` — бюджет пакета проверяется при
-# компиляции (wire.rs).
-postcard = { version = "1.1.3", default-features = false, features = ["experimental-derive"] }
-serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+heapless = "0.9"
 # Слова журнала здоровья: у прошивки они в RTC-памяти, а `Persistable` esp-hal
 # реализован для атомиков portable-atomic (на riscv32imc нет нативного CAS).
 portable-atomic = { version = "1.15.0", default-features = false }

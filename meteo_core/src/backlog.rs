@@ -8,10 +8,12 @@ use core::fmt::Debug;
 
 use heapless::spsc::Queue;
 
-use crate::codec::Reading;
+use crate::codec::{
+    EpochMillis,
+    Reading,
+};
 use crate::sensors::Sample;
 use crate::supervisor::Uptime;
-use crate::wire::EpochMillis;
 
 /// heapless `Queue<_, N>` вмещает N−1 элемент ⇒ 59 показаний ≈ 30 мин при
 /// цикле ~30с; дальше вытесняются самые старые.

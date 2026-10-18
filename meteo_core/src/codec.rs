@@ -20,8 +20,13 @@ use crate::health::{
     SNAPSHOT_WORDS,
     Snapshot,
 };
-use crate::wire::EpochMillis;
 
+/// Wall-clock в миллисекундах от UNIX epoch.
+///
+/// Единица измерения — часть типа: рядом ходят микросекунды NTP-оффсета и
+/// `Uptime` с момента boot, и голый `u64` их не различал.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EpochMillis(pub u64);
 /// Давление, 0.01 Па (≈ шаг f32 около 100 кПа).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CentiPascal(pub i32);

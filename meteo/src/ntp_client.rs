@@ -20,6 +20,7 @@ use embassy_time::{
     with_timeout,
 };
 use esp_println::println;
+use meteo_core::codec::EpochMillis;
 use meteo_core::health::Word;
 use meteo_core::ntp::{
     BootClock,
@@ -27,7 +28,6 @@ use meteo_core::ntp::{
 };
 use meteo_core::ntp_kiss::KissMemory;
 use meteo_core::supervisor::Uptime;
-use meteo_core::wire::EpochMillis;
 use sntpc::{
     Error,
     NtpContext,

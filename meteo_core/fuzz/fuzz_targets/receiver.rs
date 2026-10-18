@@ -41,6 +41,7 @@ use libfuzzer_sys::fuzz_target;
 use meteo_core::codec::{
     CentiPascal,
     Encoder,
+    EpochMillis,
     MilliCelsius,
     MilliPercentRh,
     Ppm,
@@ -78,7 +79,6 @@ use meteo_core::server::{
     Server,
     ServerError,
 };
-use meteo_core::wire::EpochMillis;
 
 /// Сколько раз сработала каждая проверяемая ветка: «расхождений нет» без
 /// счётчиков ничего не доказывает. Печать при выходе — с `METEO_FUZZ_STATS=1`

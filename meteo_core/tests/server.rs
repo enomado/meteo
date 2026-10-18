@@ -6,6 +6,7 @@ use aes_gcm::{
 };
 use meteo_core::codec::{
     Encoder,
+    EpochMillis,
     Ppm,
     Reading,
 };
@@ -34,7 +35,6 @@ use meteo_core::server::{
     LiveLease,
     Server,
 };
-use meteo_core::wire::EpochMillis;
 
 fn cipher() -> Aes128Gcm {
     Aes128Gcm::new(&(*b"supersecretkey!1").into())

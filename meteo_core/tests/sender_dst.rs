@@ -39,6 +39,7 @@ use aes_gcm::{
 };
 use meteo_core::codec::{
     CentiPascal,
+    EpochMillis,
     MilliCelsius,
     MilliPercentRh,
     Ppm,
@@ -67,7 +68,6 @@ use meteo_core::server::{
     Server,
 };
 use meteo_core::supervisor::Uptime;
-use meteo_core::wire::EpochMillis;
 use proptest::prelude::any;
 use proptest::test_runner::{
     Config,
