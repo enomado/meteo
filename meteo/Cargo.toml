@@ -191,8 +191,20 @@ esp-phy = { path = "/home/sc/t/embed/esp-hal/esp-phy" }
 #   кратные 4 ч — методы, которые прошивка не зовёт (SvetlinZarev/libscd#18,
 #   PR #19).
 # Снять патч, когда выйдет релиз с фиксами (репо тихое — может не выйти).
+#
+# bmp390-rs 0.4.0 + фиксы по даташиту BMP390 (ветка `sim-datasheet` форка,
+# симуляция `tests/bmp390_sim.rs`; EmilNorden/bmp390-rs#11, PR #12). Задевают нас:
+# - `new` → `apply_configuration`: при тёплом ресете датчик в normal, драйвер
+#   писал Sleep посреди замера (команда откладывается до конца замера) и сразу
+#   конфиг; наш `set_mode(Normal)` в это окно датчик игнорирует (§3.3.4) —
+#   барометр засыпал до reinit. Теперь драйвер ждёт Sleep, конфиг, режим последним;
+# - `ResetPolicy::Soft` не ждал конца сброса — объяснение «Soft молчит» в
+#   `sensor.rs::init_barometer`; прошивка остаётся на `ResetPolicy::None`.
+# Остальное (запись FIFO_WTM, FIFO, typestate) прошивка не зовёт.
+# Снять патч после релиза с фиксами.
 [patch.crates-io]
 libscd = { git = "https://github.com/enomado/libscd", rev = "f2452ebf0fd4bff1de03fb4743140db198f2d810" }
+bmp390-rs = { git = "https://github.com/enomado/bmp390-rs", rev = "a87a7ca91f6a747a6c8b1fc47ba1216fd195f344" }
 
 
 [features]

@@ -114,12 +114,10 @@ dependencies = [
 [[package]]
 name = "bmp390-rs"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b526f5e7f08d27150f2cc310d986bef10b6eb4ca960a84f69ff53c7478c76c0"
+source = "git+https://github.com/enomado/bmp390-rs?rev=a87a7ca91f6a747a6c8b1fc47ba1216fd195f344#a87a7ca91f6a747a6c8b1fc47ba1216fd195f344"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "heapless 0.8.0",
 ]
 
 [[package]]

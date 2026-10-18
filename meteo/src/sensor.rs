@@ -251,8 +251,10 @@ async fn init_barometer<'a>(spi_bus: &'a BaroSpi, cs: GPIO10<'a>) -> Result<Baro
         .iir_filter_coefficient(bmp390_rs::register::config::IIRFilterCoefficient::Coef3);
 
     // ResetPolicy::Soft (CMD=0xB6 + ожидание `cmd_rdy`) не успевает
-    // сконфигурироваться и молчит — циферки не меняет. Поэтому без сброса,
-    // с паузой на подачу питания.
+    // сконфигурироваться и молчит — циферки не меняет. Причина — драйвер не ждал
+    // конца сброса и писал конфиг в сбрасывающийся датчик; в форке исправлено
+    // (Cargo.toml, `[patch.crates-io]`), но на плате не проверено. Поэтому без
+    // сброса, с паузой на подачу питания.
     Timer::after(Duration::from_millis(150)).await;
     let init = async {
         let mut device = Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut Delay).await?;
