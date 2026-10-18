@@ -12,6 +12,12 @@ nursery = { level = "warn", priority = -1 }
 name = "meteo"
 path = "./src/bin/main.rs"
 
+# Фаззер шин на живой плате (поиск зависаний I2C/SPI под нагрузкой Wi-Fi):
+# `cargo run --release --bin bus_fuzz`. Данные на это время не пишутся.
+[[bin]]
+name = "bus_fuzz"
+path = "./src/bin/bus_fuzz.rs"
+
 [dependencies]
 cfg-if = { version = "1.0.5" }
 static_cell = { version = "2.1.1", features = [] }
