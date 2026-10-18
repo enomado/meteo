@@ -2,8 +2,8 @@
 //! виртуальных часах. Всё детерминировано: случайность — из seed'а, который
 //! выдаёт proptest с фиксированным seed'ом прогона.
 //!
-//! Модель SCD41: idle/measuring, в low-power periodic данные раз в 30 ± 1 с,
-//! в обычном periodic — раз в 5 ± 1 с, непрочитанные перезаписываются, `stop` сбрасывает буфер, `reinit` грузит
+//! Модель SCD41: idle/measuring, в low-power periodic первые данные через
+//! ~5 с после `start`, дальше раз в 30 ± 1 с, непрочитанные перезаписываются, `stop` сбрасывает буфер, `reinit` грузит
 //! смещение из «EEPROM»; после `start` температура выше установившейся и сходит
 //! к ней за `SCD_WARMUP` (замер на плате). Модель BMP390: normal-режим
 //! начинается с преобразования ⇒ первый `drdy` через время замера после
@@ -56,7 +56,6 @@ use meteo_core::sensors::{
     Op,
     OpResult,
     SETTLE,
-    ScdCadence,
     ScdRaw,
     SensorId,
     Sensors,
@@ -76,7 +75,11 @@ const MIN: u64 = 60 * SEC;
 const HOUR: u64 = 60 * MIN;
 
 const SCD_INTERVAL: u64 = 30 * SEC;
-const SCD_FAST_INTERVAL: u64 = 5 * SEC;
+/// От `start` low-power до первых данных (плата, 2026-10-18, два старта:
+/// данные готовы между 4 и 6 с при опросе раз в 2 с). Не `SCD_INTERVAL`:
+/// модель с первым показанием через 30 с прятала, что медленный старт
+/// индикатора — не вина датчика.
+const SCD_FIRST_DATA: u64 = 5 * SEC;
 const BARO_INTERVAL: u64 = 20 * SEC;
 /// Время одного замера BMP390 при OSR ×32/×8 прошивки, мс: формула даташита
 /// (234 + 392 + 32·2020 + 163 + 8·2020 мкс) с запасом 1.2, как у `bmp390-rs`.
@@ -175,8 +178,6 @@ struct SimScd {
     measuring: bool,
     /// Начало текущего замера (отсчёт переходного процесса).
     started:   u64,
-    /// Период данных текущего замера.
-    interval:  u64,
     next_data: u64,
     data:      Option<ScdRaw>,
     offset:    i32,
@@ -252,7 +253,6 @@ impl<'h> World<'h> {
             scd: SimScd {
                 measuring: seed.is_multiple_of(2),
                 started:   0,
-                interval:  SCD_INTERVAL,
                 next_data: SCD_INTERVAL,
                 data:      None,
                 offset:    EEPROM_OFFSET,
@@ -333,7 +333,7 @@ impl<'h> World<'h> {
                 humidity: 45.0 + f32::from(self.scd.serial % 10),
             });
             let jitter = self.rng.below(2 * SEC + 1);
-            self.scd.next_data += self.scd.interval - SEC + jitter;
+            self.scd.next_data += SCD_INTERVAL - SEC + jitter;
         }
         while self.baro.initialized && self.now >= self.baro.next_drdy {
             let garbage = self.rng.permille(self.baro_prof.garbage);
@@ -432,14 +432,10 @@ impl<'h> World<'h> {
                 bump(&self.cov.calibrations);
                 OpResult::Done
             }
-            Op::ScdStart(cadence) => {
+            Op::ScdStart => {
                 self.scd.measuring = true;
                 self.scd.started = self.now;
-                self.scd.interval = match cadence {
-                    ScdCadence::Fast => SCD_FAST_INTERVAL,
-                    ScdCadence::LowPower => SCD_INTERVAL,
-                };
-                self.scd.next_data = self.now + self.scd.interval;
+                self.scd.next_data = self.now + SCD_FIRST_DATA;
                 OpResult::Done
             }
             Op::ScdDataReady => OpResult::Ready(self.scd.data.is_some()),
@@ -797,12 +793,6 @@ fn healthy_sensors_give_every_channel() {
     assert_eq!(world.scd.offset, 1500);
     let reads = world.scd_reads.len();
     assert!(reads >= 230, "only {reads} SCD41 reads in 2 h");
-    // Быстрый замер — только ради первого показания, дальше low-power.
-    let low_power_max = usize::try_from(2 * HOUR / (SCD_INTERVAL - SEC)).expect("count fits usize") + 1;
-    assert!(
-        reads <= low_power_max,
-        "{reads} SCD41 reads in 2 h: the sensor stayed in fast periodic"
-    );
     assert!(world.max_baro_gap(MIN) <= MAX_BARO_GAP);
 }
 
@@ -826,8 +816,9 @@ fn first_cycle_carries_pressure() {
     }
 }
 
-/// Старт: индикатор получает CO2 через секунды, а не через первый интервал
-/// low-power (~30 с). Оба исхода прошлой жизни MCU: SCD41 замерял или стоял.
+/// Старт: индикатор получает CO2 через секунды — автомат не задерживает
+/// первое показание датчика. Оба исхода прошлой жизни MCU: SCD41 замерял или
+/// стоял.
 #[test]
 fn first_co2_within_seconds() {
     const FIRST_CO2_BOUND: u64 = 10 * SEC;

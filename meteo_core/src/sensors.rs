@@ -12,14 +12,9 @@
 //!
 //! SCD41 — в low-power periodic (данные раз в ~30 с): ASC считает время
 //! в часах работы, а не числом single-shot замеров с интервалом 5 мин, и
-//! 5-секундного ожидания single-shot на цикл нет. Исключение — первое
-//! показание после boot: первые данные low-power приходят только через ~30 с,
-//! и всё это время индикатору нечего показывать. Поэтому стартовая настройка
-//! запускает обычный periodic (данные через ~5 с), а после первого чтения
-//! датчик переводится в low-power (stop → start, [`ScdCadence`]). Во время
-//! замера датчику шлём только разрешённое даташитом (табл. 9):
-//! `read_measurement`, `get_data_ready_status`, `set_ambient_pressure`,
-//! `stop_periodic_measurement`.
+//! 5-секундного ожидания single-shot на цикл нет. Во время замера датчику
+//! шлём только разрешённое даташитом (табл. 9): `read_measurement`,
+//! `get_data_ready_status`, `set_ambient_pressure`, `stop_periodic_measurement`.
 //!
 //! Цикл: SCD41 (опрос готовности раз в [`SCD_POLL`], чтение) → BMP390 →
 //! компенсация давления в SCD41 → разовая калибровка смещения температуры
@@ -178,16 +173,6 @@ impl Fault {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hectopascal(pub u16);
 
-/// Режим periodic-замера SCD41.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScdCadence {
-    /// `start_periodic_measurement`: данные раз в 5 с. Только ради первого
-    /// показания после boot — дальше датчик переводится в [`Self::LowPower`].
-    Fast,
-    /// `start_low_power_periodic_measurement`: данные раз в ~30 с.
-    LowPower,
-}
-
 /// Операция с шиной.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -196,7 +181,7 @@ pub enum Op {
     ScdSerial,
     ScdGetTempOffset,
     ScdSetTempOffset(MilliCelsius),
-    ScdStart(ScdCadence),
+    ScdStart,
     ScdDataReady,
     ScdRead,
     ScdSetPressure(Hectopascal),
@@ -223,7 +208,7 @@ impl Op {
             Self::ScdSerial => 3,
             Self::ScdGetTempOffset => 4,
             Self::ScdSetTempOffset(_) => 5,
-            Self::ScdStart(_) => 6,
+            Self::ScdStart => 6,
             Self::ScdDataReady => 7,
             Self::ScdRead => 8,
             Self::ScdSetPressure(_) => 9,
@@ -239,7 +224,7 @@ impl Op {
         match self {
             Self::ScdStop => Duration::from_millis(500),
             Self::ScdReinit => Duration::from_millis(20),
-            Self::ScdStart(_) => Duration::ZERO,
+            Self::ScdStart => Duration::ZERO,
             Self::ScdSerial
             | Self::ScdGetTempOffset
             | Self::ScdSetTempOffset(_)
@@ -355,7 +340,7 @@ enum ScdMode {
     /// После boot или сбоя `stop`/`start`: мог и замерять.
     Unknown,
     Idle,
-    Measuring(ScdCadence),
+    Measuring,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,11 +352,6 @@ enum ScdPhase {
         step:     usize,
     },
     Measuring,
-    /// Первое показание взято в [`ScdCadence::Fast`]: перевод в low-power,
-    /// stop → start.
-    SlowDown {
-        step: usize,
-    },
     /// Разовая калибровка смещения температуры: stop → set → start.
     Calibrate {
         offset: MilliCelsius,
@@ -384,23 +364,11 @@ enum ScdPhase {
 }
 
 /// Первая настройка: остановить возможный замер прошлой жизни MCU, проверить
-/// датчик, узнать смещение, запустить замер. Замер — быстрый: первое показание
-/// через ~5 с, а не через ~30 с low-power (см. [`ScdPhase::SlowDown`]).
-const SETUP: [Op; 4] = [
-    Op::ScdStop,
-    Op::ScdSerial,
-    Op::ScdGetTempOffset,
-    Op::ScdStart(ScdCadence::Fast),
-];
+/// датчик, узнать смещение, запустить замер.
+const SETUP: [Op; 4] = [Op::ScdStop, Op::ScdSerial, Op::ScdGetTempOffset, Op::ScdStart];
 /// Переинициализация: `reinit` разрешён только после `stop` (даташит 3.9.5) и
-/// перечитывает настройки из EEPROM ⇒ смещение снова узнаём. Старт быстрый,
-/// как у первой настройки: после восстановления данные нужны поскорее.
-const REINIT: [Op; 4] = [
-    Op::ScdStop,
-    Op::ScdReinit,
-    Op::ScdGetTempOffset,
-    Op::ScdStart(ScdCadence::Fast),
-];
+/// перечитывает настройки из EEPROM ⇒ смещение снова узнаём.
+const REINIT: [Op; 4] = [Op::ScdStop, Op::ScdReinit, Op::ScdGetTempOffset, Op::ScdStart];
 
 #[derive(Debug, Clone, Copy)]
 struct Scd {
@@ -559,7 +527,7 @@ impl Sensors {
         if let Some(op) = self.pressure_step() {
             return Action::Run(op);
         }
-        if let Some(action) = self.restart_step(now) {
+        if let Some(action) = self.calibration_step(now) {
             return action;
         }
         // Ждать SCD41 было нечего (пауза восстановления) ⇒ держим темп циклов.
@@ -605,8 +573,8 @@ impl Sensors {
                     }
                     return Some(Action::Run(Op::ScdDataReady));
                 }
-                // Перезапуск замера — после опроса обоих датчиков, не здесь.
-                ScdPhase::SlowDown { .. } | ScdPhase::Calibrate { .. } => {
+                // Калибровка — после опроса обоих датчиков, не здесь.
+                ScdPhase::Calibrate { .. } => {
                     self.cycle.scd.done = true;
                     return None;
                 }
@@ -632,7 +600,7 @@ impl Sensors {
 
     fn pressure_step(&mut self) -> Option<Op> {
         let c = &mut self.cycle;
-        if c.pressure_sent || c.scd.failed || !matches!(self.scd.mode, ScdMode::Measuring(_)) {
+        if c.pressure_sent || c.scd.failed || self.scd.mode != ScdMode::Measuring {
             return None;
         }
         let hpa = c.pressure_hpa?;
@@ -640,19 +608,8 @@ impl Sensors {
         Some(Op::ScdSetPressure(hpa))
     }
 
-    /// Перезапуск замера SCD41 в хвосте цикла: перевод в low-power или
-    /// калибровка смещения.
-    fn restart_step(&mut self, now: Uptime) -> Option<Action> {
+    fn calibration_step(&mut self, now: Uptime) -> Option<Action> {
         match self.scd.phase {
-            ScdPhase::SlowDown { step } => {
-                if now < self.scd.not_before {
-                    return Some(Action::Wait(self.scd.not_before));
-                }
-                Some(Action::Run(match step {
-                    0 => Op::ScdStop,
-                    _ => Op::ScdStart(ScdCadence::LowPower),
-                }))
-            }
             ScdPhase::Calibrate { offset, step } => {
                 if now < self.scd.not_before {
                     return Some(Action::Wait(self.scd.not_before));
@@ -660,7 +617,7 @@ impl Sensors {
                 Some(Action::Run(match step {
                     0 => Op::ScdStop,
                     1 => Op::ScdSetTempOffset(offset),
-                    _ => Op::ScdStart(ScdCadence::LowPower),
+                    _ => Op::ScdStart,
                 }))
             }
             ScdPhase::Measuring
@@ -712,8 +669,8 @@ impl Sensors {
                 self.scd.offset = Some(offset);
                 self.scd_advance(now, health);
             }
-            (Op::ScdStart(cadence), OpResult::Done) => {
-                self.scd.mode = ScdMode::Measuring(cadence);
+            (Op::ScdStart, OpResult::Done) => {
+                self.scd.mode = ScdMode::Measuring;
                 self.scd.last_data = now;
                 self.scd.started = now;
                 self.scd.ready = false;
@@ -733,9 +690,6 @@ impl Sensors {
                 self.scd.not_before = after(now, SCD_POLL);
                 self.cycle.scd.done = true;
                 self.take_scd(raw, now, health);
-                if self.scd.mode == ScdMode::Measuring(ScdCadence::Fast) {
-                    self.scd.phase = ScdPhase::SlowDown { step: 0 };
-                }
             }
             (Op::ScdSetPressure(_), OpResult::Done) => {}
             (Op::BaroInit, OpResult::Done) => {
@@ -776,13 +730,6 @@ impl Sensors {
                     self.scd.phase = ScdPhase::Measuring;
                 }
             }
-            ScdPhase::SlowDown { step } => {
-                if step < 1 {
-                    self.scd.phase = ScdPhase::SlowDown { step: step + 1 };
-                } else {
-                    self.scd.phase = ScdPhase::Measuring;
-                }
-            }
             ScdPhase::Calibrate { offset, step } => {
                 if step < 2 {
                     self.scd.phase = ScdPhase::Calibrate {
@@ -806,7 +753,7 @@ impl Sensors {
         scd.ready = false;
         scd.not_before = after(now, SETTLE);
         self.cycle.scd.failed = true;
-        if matches!(op, Op::ScdStop | Op::ScdStart(_)) {
+        if matches!(op, Op::ScdStop | Op::ScdStart) {
             scd.mode = ScdMode::Unknown;
         }
         match scd.phase {
@@ -819,9 +766,9 @@ impl Sensors {
                 };
                 self.cycle.scd.done = true;
             }
-            // Перезапуск оборвался посреди stop/(set)/start: состояние датчика
+            // Калибровка оборвалась посреди stop/set/start: состояние датчика
             // неясно — со следующего цикла переинициализация.
-            ScdPhase::SlowDown { .. } | ScdPhase::Calibrate { .. } => {
+            ScdPhase::Calibrate { .. } => {
                 scd.phase = ScdPhase::Setup {
                     recovery: true,
                     step:     0,

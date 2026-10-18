@@ -50,7 +50,12 @@ pub const SYS_NO_WIFI: u8 = 1 << 3; // 4× — нет WiFi/NTP
 pub const SYS_PANIC_RECOVERED: u8 = 1 << 4; // 5× белым — был reset из-за паники
 pub const SYS_WDT_RECOVERED: u8 = 1 << 5; // 6× голубым — был reset из-за зависания (watchdog)
 
-pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
+/// Активные статус-биты; на старте пусто.
+///
+/// Пока идёт первая попытка подключения, «нет Wi-Fi» — ещё не сбой, и жёлтый
+/// код до первого цвета воздуха только пугал. `SYS_NO_WIFI` ставит
+/// `network::connection` по неудачной попытке или обрыву.
+pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(0);
 
 /// Код отсутствия занимает значение за пределами диапазона `Ppm`.
 /// `u32` атомик сохраняет все 65536 возможных значений CO2 без потери.
