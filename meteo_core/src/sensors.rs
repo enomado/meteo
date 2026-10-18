@@ -292,6 +292,16 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// Хотя бы один канал прочитан. Пустое показание на сервер не идёт.
+    #[must_use]
+    pub const fn has_any_channel(&self) -> bool {
+        self.pressure.is_some()
+            || self.baro_temp.is_some()
+            || self.co2.is_some()
+            || self.humidity.is_some()
+            || self.scd_temp.is_some()
+    }
+
     #[must_use]
     pub const fn into_reading(self, time: EpochMillis) -> Reading {
         Reading {

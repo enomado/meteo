@@ -16,12 +16,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::watch::Watch;
 use embassy_time::{
     Duration,
-    Instant,
     Timer,
     with_timeout,
 };
 use esp_println::println;
 use meteo_core::health::Word;
+use meteo_core::supervisor::Uptime;
 use meteo_core::wire::EpochMillis;
 use portable_atomic::{
     AtomicI64,
@@ -35,7 +35,10 @@ use sntpc::{
 use sntpc_net_embassy::UdpSocketWrapper;
 use sntpc_time_embassy::EmbassyTimestampGenerator;
 
-use crate::watchdog::health;
+use crate::watchdog::{
+    health,
+    uptime,
+};
 
 const NTP_SERVER: &str = "pool.ntp.org";
 const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
@@ -50,12 +53,16 @@ const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
 static CURRENT_OFFSET_US: AtomicI64 = AtomicI64::new(DEFAULT_OFFSET_US);
 
 /// Вшитое значение до первого успешного NTP-синка: 2025-09-16 01:31 UTC.
-/// Показания с таким временем в серверный буфер НЕ попадают (`sensor_loop` ждёт
-/// `CLOCK_IS_SYNCED_WATCH`), оно нужно лишь чтобы часы вообще были монотонны.
+/// Показания с таким временем в серверный буфер НЕ попадают (`sensor_loop`
+/// держит их по uptime и ставит время после `CLOCK_IS_SYNCED_WATCH`), оно нужно
+/// лишь чтобы часы вообще были монотонны.
 const DEFAULT_OFFSET_US: i64 = 1_757_986_271_840_363;
 
-pub fn now_epoch() -> EpochMillis {
-    let since_boot_ms = Instant::now().as_millis();
+/// Epoch момента `at` этой загрузки по текущему смещению. Смещение — epoch
+/// момента boot, поэтому момент из прошлого (цикл до синка) пересчитывается
+/// так же, как текущий.
+pub fn epoch_at(at: Uptime) -> EpochMillis {
+    let since_boot_ms = u64::try_from(at.0.as_millis()).unwrap_or(u64::MAX);
     let offset_ms = CURRENT_OFFSET_US.load(Ordering::Relaxed) / 1000;
     EpochMillis(apply_offset(since_boot_ms, offset_ms))
 }
@@ -139,7 +146,8 @@ async fn try_sync(stack: Stack<'_>) -> bool {
     CURRENT_OFFSET_US.store(pp.offset(), Ordering::Relaxed);
     // Журнал ставит время сбоям по этому смещению (и восстановит время
     // зависания после reset).
-    health().clock_synced(crate::watchdog::uptime(), now_epoch().0);
+    let now = uptime();
+    health().clock_synced(now, epoch_at(now).0);
     true
 }
 
@@ -150,8 +158,9 @@ pub async fn ntp_sync_loop(stack: Stack<'static>) {
 
     let flag_sender = CLOCK_IS_SYNCED_WATCH.sender();
 
-    // Первый sync блокирует консьюмеров (sensor_loop ждёт CLOCK_IS_SYNCED_WATCH);
-    // пока не получится — ретрай каждые NTP_RETRY_DELAY.
+    // До первого sync sensor_loop держит показания по uptime и ставит им время
+    // по флагу CLOCK_IS_SYNCED_WATCH; пока не получится — ретрай каждые
+    // NTP_RETRY_DELAY.
     while !try_sync(stack).await {
         Timer::after(NTP_RETRY_DELAY).await;
     }

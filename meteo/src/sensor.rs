@@ -60,6 +60,7 @@ use libscd::asynchronous::scd4x::Scd4x;
 use libscd::error::Error as ScdError;
 use meteo_core::backlog::{
     SensorQueue,
+    Unsynced,
     push_evicting,
 };
 use meteo_core::codec::{
@@ -96,7 +97,7 @@ use crate::led::{
 };
 use crate::ntp_client::{
     CLOCK_IS_SYNCED_WATCH,
-    now_epoch,
+    epoch_at,
 };
 use crate::spi_helper::BarometerArgs;
 use crate::watchdog::{
@@ -277,8 +278,9 @@ fn report_failure(op: Op, result: &OpResult) {
     }
 }
 
-/// Итог цикла: LED, `SYS_NO_PERIPH`, показание в очередь (после первого NTP).
-async fn finish_cycle(cycle: Cycle, ntp_synced: bool) {
+/// Итог цикла: LED, `SYS_NO_PERIPH`, показание в очередь. До первого NTP
+/// показание ждёт в `unsynced` с моментом по uptime.
+async fn finish_cycle(cycle: Cycle, at: Uptime, ntp_synced: bool, unsynced: &mut Unsynced) {
     let s = cycle.sample;
     match s.co2 {
         Some(co2) => publish_co2(co2),
@@ -298,12 +300,20 @@ async fn finish_cycle(cycle: Cycle, ntp_synced: bool) {
         s.baro_temp.map(|t| t.0),
     );
     // В серверный буфер — только с доверенным временем: до первого NTP-синка
-    // часы идут от вшитого значения. Показание без каналов не кладём.
+    // часы идут от вшитого значения. Удержанные циклы уходят первыми, чтобы
+    // очередь шла по времени. Показание без каналов не кладём.
     if ntp_synced {
-        let reading = s.into_reading(now_epoch());
-        if reading.has_any_channel() {
+        while let Some(reading) = unsynced.release(epoch_at) {
             enqueue_reading(reading).await;
         }
+        if s.has_any_channel() {
+            enqueue_reading(s.into_reading(epoch_at(at))).await;
+        }
+    } else if s.has_any_channel()
+        && let Some(evicted) = unsynced.hold(at, s)
+    {
+        println!("no NTP yet: dropped reading at uptime {} s", evicted.0.as_secs());
+        QUEUE_EVICTIONS.add(1, Ordering::Relaxed);
     }
 }
 
@@ -356,6 +366,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
 
     let health = health();
     let mut sensors = Sensors::new(uptime());
+    let mut unsynced = Unsynced::new();
     let mut ntp_ready = CLOCK_IS_SYNCED_WATCH
         .receiver()
         .expect("CLOCK_IS_SYNCED_WATCH has a receiver slot for the sensor task");
@@ -401,7 +412,7 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
                     // heartbeat для watchdog: цикл автомата ограничен по времени
                     // при любом поведении шины (DST, инвариант 1).
                     crate::watchdog::beat_sensor();
-                    finish_cycle(cycle, ntp_ready.try_get() == Some(true)).await;
+                    finish_cycle(cycle, uptime(), ntp_ready.try_get() == Some(true), &mut unsynced).await;
                 }
             }
         }
