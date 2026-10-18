@@ -79,6 +79,7 @@ use meteo_core::sensors::{
     Op,
     OpCode,
     OpResult,
+    ScdCadence,
     ScdRaw,
     Sensors,
 };
@@ -187,7 +188,8 @@ async fn perform(op: Op, scd: &mut ScdDevice<'_>, baro: Option<&mut BarometerDev
             let celsius = offset.celsius() as f32;
             scd_done(scd.set_temperature_offset(celsius).await)
         }
-        Op::ScdStart => scd_done(scd.start_low_power_periodic_measurement().await),
+        Op::ScdStart(ScdCadence::Fast) => scd_done(scd.start_periodic_measurement().await),
+        Op::ScdStart(ScdCadence::LowPower) => scd_done(scd.start_low_power_periodic_measurement().await),
         Op::ScdDataReady => {
             scd.data_ready()
                 .await

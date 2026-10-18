@@ -3,9 +3,12 @@
     reason = "ESP32-C3 runs LED futures locally on one thread-mode Embassy executor; they are not sent between threads."
 )]
 
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{
     Duration,
     Timer,
+    with_timeout,
 };
 use esp_hal::gpio::DriveMode;
 use esp_hal::gpio::interconnect::PeripheralOutput;
@@ -54,6 +57,10 @@ pub static SYSTEM_STATUS: AtomicU8 = AtomicU8::new(SYS_NO_WIFI);
 const NO_CO2: u32 = u32::MAX;
 
 static LATEST_CO2: AtomicU32 = AtomicU32::new(NO_CO2);
+
+/// Пришло свежее CO2: будит LED-таск из паузы blink-only, чтобы цвет воздуха
+/// появился сразу, а не после паузы.
+static CO2_ARRIVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Яркость blink-кодов (проценты). Заметно выше CO2-палитры: код ошибки должен
 /// читаться с другого конца комнаты.
@@ -142,6 +149,7 @@ pub fn clear_status(bits: u8) {
 
 pub fn publish_co2(co2: Ppm) {
     LATEST_CO2.store(u32::from(co2.0), Ordering::Relaxed);
+    CO2_ARRIVED.signal(());
 }
 
 /// Показание CO2 протухло: SCD41 не отдал измерение в этом цикле.
@@ -372,13 +380,18 @@ pub async fn led_loop(mut led: RgbLed<'static>) {
         let Some(co2) = latest_co2() else {
             // CO2-канал нечем заполнять: играем blink активных бит
             // (или просто ждём, если ошибок нет и мы ждём первое чтение).
+            // Сигнал, взведённый до этой ветки, — о показании, которое уже
+            // протухло; ждём только пришедшее после.
+            CO2_ARRIVED.reset();
             led.fade_to(Rgb::OFF, 200);
-            if status != 0 {
+            let gap_ms = if status != 0 {
                 play_blink_codes(&mut led, status).await;
-                Timer::after(Duration::from_millis(BLINK_ONLY_GAP_MS)).await;
+                BLINK_ONLY_GAP_MS
             } else {
-                Timer::after(Duration::from_millis(2000)).await;
-            }
+                2000
+            };
+            // Пришедшее CO2 обрывает паузу: цвет воздуха — сразу.
+            let _ = with_timeout(Duration::from_millis(gap_ms), CO2_ARRIVED.wait()).await;
             since_overlay_ms = 0;
             continue;
         };
