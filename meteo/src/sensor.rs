@@ -15,6 +15,7 @@
 
 use bmp390_rs::error::Bmp390Error;
 use bmp390_rs::register::int_status::IntStatus;
+use bmp390_rs::register::pwr_ctrl::PowerMode;
 use bmp390_rs::{
     Bmp390,
     ResetPolicy,
@@ -237,7 +238,13 @@ async fn init_barometer<'a>(spi_bus: &'a BaroSpi, cs: GPIO10<'a>) -> Result<Baro
     let cs = Output::new(cs, Level::High, OutputConfig::default());
     let spi_device = SpiDevice::new(spi_bus, cs);
 
+    // Конфигурация пишется в Sleep, normal-режим включается последним: ресет
+    // MCU барометр не обесточивает, он остаётся в normal прошлой жизни, а
+    // запись Normal поверх Normal цикл не перезапускает — первый `drdy` пришёл
+    // бы по старой фазе ODR, через 20 с (плата). Sleep → Normal начинает
+    // свежий цикл с преобразования (`sensors::BARO_CONVERSION`).
     let config = bmp390_rs::config::Configuration::default()
+        .power_mode(PowerMode::Sleep)
         .output_data_rate(bmp390_rs::register::odr::OutputDataRate::R0p05Hz) // ~20 сек
         .pressure_oversampling(bmp390_rs::register::osr::Oversampling::X32)
         .temperature_oversampling(bmp390_rs::register::osr::Oversampling::X8)
@@ -247,12 +254,15 @@ async fn init_barometer<'a>(spi_bus: &'a BaroSpi, cs: GPIO10<'a>) -> Result<Baro
     // сконфигурироваться и молчит — циферки не меняет. Поэтому без сброса,
     // с паузой на подачу питания.
     Timer::after(Duration::from_millis(150)).await;
-    Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut Delay)
-        .await
-        .map_err(|e| {
-            println!("BMP390: init failed: {:?}", e);
-            baro_fault(&e)
-        })
+    let init = async {
+        let mut device = Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut Delay).await?;
+        device.set_mode(PowerMode::Normal).await?;
+        Ok(device)
+    };
+    init.await.map_err(|e| {
+        println!("BMP390: init failed: {:?}", e);
+        baro_fault(&e)
+    })
 }
 
 fn instant(at: Uptime) -> Instant {
