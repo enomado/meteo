@@ -5,8 +5,9 @@
 //! Модель SCD41: idle/measuring, в low-power periodic данные раз в 30 ± 1 с,
 //! непрочитанные перезаписываются, `stop` сбрасывает буфер, `reinit` грузит
 //! смещение из «EEPROM»; после `start` температура выше установившейся и сходит
-//! к ней за `SCD_WARMUP` (замер на плате). Модель BMP390: после инициализации
-//! `drdy` раз в 20 с.
+//! к ней за `SCD_WARMUP` (замер на плате). Модель BMP390: normal-режим
+//! начинается с преобразования ⇒ первый `drdy` через время замера после
+//! инициализации, дальше раз в 20 с.
 //! Драйвер исполняет операцию за её время исполнения; «зависание» — операция
 //! длится `op.timeout()` и возвращает `Timeout` (так делает драйвер прошивки).
 //!
@@ -15,8 +16,8 @@
 //! время или навсегда.
 //!
 //! Инварианты:
-//! 1. между завершёнными циклами ≤ 60 с (лимит watchdog 90 с); предел каждой
-//!    операции ≤ `OP_TIMEOUT_MAX`; `Wait` всегда в будущее;
+//! 1. между завершёнными циклами ≤ 60 с (лимит watchdog 90 с) и > 0;
+//!    предел каждой операции ≤ `OP_TIMEOUT_MAX`; `Wait` всегда в будущее;
 //! 2. легальность по даташиту: во время замера — только разрешённые команды,
 //!    чтение — только при готовых данных, после сбоя команда SCD41 не раньше
 //!    `SETTLE`, BMP390 опрашивается только инициализированным;
@@ -75,6 +76,9 @@ const HOUR: u64 = 60 * MIN;
 
 const SCD_INTERVAL: u64 = 30 * SEC;
 const BARO_INTERVAL: u64 = 20 * SEC;
+/// Время одного замера BMP390 при OSR ×32/×8 прошивки, мс: формула даташита
+/// (234 + 392 + 32·2020 + 163 + 8·2020 мкс) с запасом 1.2, как у `bmp390-rs`.
+const BARO_CONVERSION: u64 = 98;
 /// Смещение температуры SCD41 по умолчанию (EEPROM), м°C.
 const EEPROM_OFFSET: i32 = 4000;
 /// Переходный процесс SCD41 после старта low-power замера (плата, 2026-10-18,
@@ -226,6 +230,8 @@ struct World<'h> {
     /// Моменты успешных чтений.
     scd_reads:     Vec<u64>,
     baro_samples:  Vec<u64>,
+    /// Закрытые циклы с моментом закрытия.
+    cycles:        Vec<(u64, Cycle)>,
     set_offsets:   u32,
     cov:           &'h Coverage,
 }
@@ -264,6 +270,7 @@ impl<'h> World<'h> {
             scd_failed_at: None,
             scd_reads: Vec::new(),
             baro_samples: Vec::new(),
+            cycles: Vec::new(),
             set_offsets: 0,
             cov,
         }
@@ -476,7 +483,8 @@ impl<'h> World<'h> {
         let result = match op {
             Op::BaroInit => {
                 self.baro.initialized = true;
-                self.baro.next_drdy = self.now + BARO_INTERVAL;
+                // Конфигурация записана в конце операции.
+                self.baro.next_drdy = self.now + ms(op.exec_time()) + BARO_CONVERSION;
                 self.baro.drdy = None;
                 if matches!(self.baro.wedge, Some(Wedge::UntilReinit | Wedge::Mute)) {
                     self.baro.wedge = None;
@@ -507,7 +515,11 @@ impl<'h> World<'h> {
         if gap > MAX_CYCLE_GAP {
             return Err(format!("cycle took {}s, ended at {at}s", gap / SEC));
         }
+        if gap == 0 && !self.cycles.is_empty() {
+            return Err(format!("two cycles at {} ms: the automaton spins", self.now));
+        }
         self.last_cycle = self.now;
+        self.cycles.push((self.now, *cycle));
         let s = cycle.sample;
         let scd = self.cycle_scd.take();
         if s.co2.map(|c| c.0) != scd.map(|r| r.co2) {
@@ -777,6 +789,26 @@ fn healthy_sensors_give_every_channel() {
     let reads = world.scd_reads.len();
     assert!(reads >= 230, "only {reads} SCD41 reads in 2 h");
     assert!(world.max_baro_gap(MIN) <= MAX_BARO_GAP);
+}
+
+/// Старт: первый цикл несёт все каналы. Опрос BMP390 сразу за инициализацией
+/// застал бы `drdy` пустым, и давление пришло бы только через период ODR,
+/// циклом позже. Оба исхода прошлой жизни MCU: SCD41 замерял или стоял.
+#[test]
+fn first_cycle_carries_pressure() {
+    for seed in [0, 1] {
+        let cov = Coverage::default();
+        let words: [AtomicU32; WORDS] = core::array::from_fn(|_| AtomicU32::new(0));
+        let mut world = World::new(seed, &words, &cov);
+        world.run_until(2 * MIN).unwrap();
+        let (at, first) = world.cycles[0];
+        assert!(
+            first.sample.pressure.is_some() && first.sample.co2.is_some() && first.periph_ok,
+            "seed {seed}: first cycle at {at} ms: {first:?}"
+        );
+        world.check_healthy(SensorId::Scd41).unwrap();
+        world.check_healthy(SensorId::Bmp390).unwrap();
+    }
 }
 
 /// Залипший до `reinit` SCD41 оживает переинициализацией без перезагрузки.

@@ -49,6 +49,13 @@ pub const CYCLE_PERIOD: Duration = Duration::from_secs(30);
 pub const SCD_STALE: Duration = Duration::from_secs(75);
 /// Нет данных BMP390 столько ⇒ сбой `Stale` (ODR 0.05 Гц — раз в 20 с).
 pub const BARO_STALE: Duration = Duration::from_secs(60);
+/// Пауза от инициализации BMP390 до первого опроса.
+///
+/// Normal-режим, включённый переходом из Sleep (так делает драйвер прошивки),
+/// начинается с преобразования; при OSR ×32/×8 прошивки оно идёт до 98 мс
+/// (формула даташита с запасом 1.2). Опрос раньше застал бы `drdy` пустым,
+/// а следующее преобразование — только через период ODR (20 с).
+pub const BARO_CONVERSION: Duration = Duration::from_millis(100);
 /// Пауза после сбоя операции перед следующей командой тому же датчику:
 /// снятая по таймауту команда могла ещё исполняться.
 pub const SETTLE: Duration = Duration::from_secs(1);
@@ -380,9 +387,11 @@ enum BaroPhase {
 
 #[derive(Debug, Clone, Copy)]
 struct Baro {
-    phase:     BaroPhase,
-    failures:  u32,
-    last_data: Uptime,
+    phase:      BaroPhase,
+    failures:   u32,
+    last_data:  Uptime,
+    /// Раньше этого момента не опрашивать: идёт первое преобразование.
+    not_before: Uptime,
 }
 
 /// Накопитель текущего цикла.
@@ -465,9 +474,10 @@ impl Sensors {
                 calibrated: false,
             },
             baro:    Baro {
-                phase:     BaroPhase::NeedsInit { recovery: false },
-                failures:  0,
-                last_data: now,
+                phase:      BaroPhase::NeedsInit { recovery: false },
+                failures:   0,
+                last_data:  now,
+                not_before: now,
             },
             cycle:   CycleState::new(now),
             running: None,
@@ -573,6 +583,7 @@ impl Sensors {
                 Some(Action::Run(Op::BaroInit))
             }
             BaroPhase::NeedsInit { .. } => Some(Action::Run(Op::BaroInit)),
+            BaroPhase::Ready if now < self.baro.not_before => Some(Action::Wait(self.baro.not_before)),
             BaroPhase::Ready => Some(Action::Run(Op::BaroPoll)),
         }
     }
@@ -678,6 +689,7 @@ impl Sensors {
                 self.baro.phase = BaroPhase::Ready;
                 self.baro.failures = 0;
                 self.baro.last_data = now;
+                self.baro.not_before = after(now, BARO_CONVERSION);
             }
             (Op::BaroPoll, OpResult::Baro(raw)) => {
                 self.cycle.baro.done = true;
