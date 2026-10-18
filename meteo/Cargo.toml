@@ -164,6 +164,10 @@ esp-rtos = { git = "https://github.com/esp-rs/esp-hal", package = "esp-rtos", br
 
 [build-dependencies]
 toml = "1.1.6"
+# WPA2 PSK из passphrase на сборке (build_helpers::wpa_psk_hex): на устройстве
+# PBKDF2 программным SHA-1 занимает CPU на ~1.4 с при каждом подключении.
+pbkdf2 = "0.13.0"
+sha1 = "0.11.0"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
 # - synced to upstream/main `8ef1b671` (2026-10-18, crate versions unchanged),

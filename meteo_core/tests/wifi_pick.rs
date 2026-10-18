@@ -7,12 +7,12 @@ use meteo_core::wifi_pick::{
 };
 
 const HOME: Network<'static> = Network {
-    ssid:     "home",
-    password: "pw1",
+    ssid:    "home",
+    psk_hex: "psk1",
 };
 const DACHA: Network<'static> = Network {
-    ssid:     "dacha",
-    password: "pw2",
+    ssid:    "dacha",
+    psk_hex: "psk2",
 };
 const NETS: [Network<'static>; 2] = [HOME, DACHA];
 

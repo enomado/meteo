@@ -8,12 +8,14 @@ pub struct Rssi(pub i8);
 
 /// Сеть из конфига прошивки.
 ///
-/// Именованные поля не позволяют незаметно перепутать SSID и пароль при
+/// Именованные поля не позволяют незаметно перепутать SSID и ключ при
 /// настройке подключения.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Network<'n> {
-    pub ssid:     &'n str,
-    pub password: &'n str,
+    pub ssid:    &'n str,
+    /// WPA2 PSK, 64 hex-символа: build-скрипт выводит его из passphrase,
+    /// чтобы supplicant не считал PBKDF2 на устройстве.
+    pub psk_hex: &'n str,
 }
 
 /// Настроенная сеть и сигнал сильнейшей найденной для неё точки доступа.

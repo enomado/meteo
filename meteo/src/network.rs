@@ -152,13 +152,14 @@ async fn pick_network(controller: &mut WifiController<'static>, attempt: usize) 
 ///
 /// `Wpa2Personal` — ровно то, что esp-radio ставил по умолчанию, пока пароль и
 /// метод аутентификации были отдельными полями `StationConfig`.
-/// Длины SSID/пароля проверяет build-скрипт (`build_helpers::check_network`),
-/// поэтому конверсия здесь не может упасть: паника на буте свалила бы плату в
-/// бесконечный цикл reset'ов.
+/// Пароль — готовый PSK (64 hex): supplicant берёт его без PBKDF2, см.
+/// `build_helpers::wpa_psk_hex`. Длину SSID проверяет, а PSK выводит
+/// build-скрипт, поэтому конверсия здесь не может упасть: паника на буте
+/// свалила бы плату в бесконечный цикл reset'ов.
 ///
 /// # Panics
 ///
-/// Panics if the build-time SSID or password length check is bypassed.
+/// Panics if the build-time SSID length check or PSK derivation is bypassed.
 #[must_use]
 pub fn station_config(network: Network<'_>) -> Config {
     Config::Station(
@@ -171,9 +172,9 @@ pub fn station_config(network: Network<'_>) -> Config {
             )
             .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
                 network
-                    .password
+                    .psk_hex
                     .try_into()
-                    .expect("password length checked at build time"),
+                    .expect("PSK is 64 hex characters, derived at build time"),
             )),
     )
 }

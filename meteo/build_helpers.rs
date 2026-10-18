@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::net::Ipv4Addr;
 
 use toml::Value;
@@ -16,23 +17,57 @@ pub struct FirmwareWifiNetwork {
     pub password: String,
 }
 
-/// Пределы esp-radio: `Ssid` держит 32 байта, `Password` — 64. Проверяем на
-/// сборке, чтобы прошивка не падала на `try_into()` уже на устройстве: паника на
-/// буте = бесконечный цикл reset'ов (см. `crate::watchdog` в прошивке).
+/// Предел esp-radio: `Ssid` держит 32 байта. Проверяем на сборке, чтобы
+/// прошивка не падала на `try_into()` уже на устройстве: паника на буте =
+/// бесконечный цикл reset'ов (см. `crate::watchdog` в прошивке).
 const SSID_MAX_BYTES: usize = 32;
-const PASSWD_MAX_BYTES: usize = 64;
 
-fn check_network(ssid: &str, passwd: &str) {
+/// WPA2 passphrase — 8..=63 печатных ASCII (IEEE 802.11i, H.4.1).
+const PASSPHRASE_BYTES: core::ops::RangeInclusive<usize> = 8..=63;
+/// PSK в hex — 64 символа; столько же держит `Password` esp-radio.
+const PSK_HEX_LEN: usize = 64;
+/// Итерации PBKDF2 по 802.11i.
+const PSK_ROUNDS: u32 = 4096;
+
+fn check_ssid(ssid: &str) {
     assert!(
         ssid.len() <= SSID_MAX_BYTES,
         "SSID {ssid:?} is {} bytes, esp-radio allows {SSID_MAX_BYTES}",
         ssid.len()
     );
+}
+
+/// WPA2 PSK в hex (64 символа) для пары SSID/passphrase.
+///
+/// Прошивке отдаём PSK, а не passphrase: получив 64 hex-символа, supplicant
+/// блоба берёт их как PSK (`hexstr2bin` в `wpa.c`), иначе считает
+/// PBKDF2-HMAC-SHA1 на 4096 итераций программным SHA-1 (`sha1-internal.c`) —
+/// на ESP32-C3 это ~1.4 с занятого CPU на каждом подключении (плата,
+/// 2026-10-18: шаг стартового теста LED 400 мс растягивался до 1.8 с).
+/// Цена — WPA3-SAE с PSK невозможен; прошивка и так подключается как
+/// `Wpa2Personal`.
+///
+/// Passphrase, уже записанная в конфиге как 64 hex-символа, — это PSK:
+/// возвращаем её как есть, ровно как поступил бы supplicant.
+fn wpa_psk_hex(ssid: &str, passphrase: &str) -> String {
+    if passphrase.len() == PSK_HEX_LEN && passphrase.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return passphrase.to_ascii_lowercase();
+    }
     assert!(
-        passwd.len() <= PASSWD_MAX_BYTES,
-        "password for SSID {ssid:?} is {} bytes, esp-radio allows {PASSWD_MAX_BYTES}",
-        passwd.len()
+        PASSPHRASE_BYTES.contains(&passphrase.len()),
+        "passphrase for SSID {ssid:?} is {} bytes; WPA2 needs 8..=63 (or a 64-hex PSK)",
+        passphrase.len()
     );
+    assert!(
+        passphrase.bytes().all(|b| (0x20..=0x7e).contains(&b)),
+        "passphrase for SSID {ssid:?} must be printable ASCII (IEEE 802.11i H.4.1)"
+    );
+    let psk: [u8; 32] =
+        pbkdf2::pbkdf2_hmac_array::<sha1::Sha1, 32>(passphrase.as_bytes(), ssid.as_bytes(), PSK_ROUNDS);
+    psk.iter().fold(String::with_capacity(PSK_HEX_LEN), |mut hex, b| {
+        write!(hex, "{b:02x}").expect("writing to a String cannot fail");
+        hex
+    })
 }
 
 pub fn parse_config(toml_str: &str) -> FirmwareConfig {
@@ -73,7 +108,7 @@ pub fn parse_config(toml_str: &str) -> FirmwareConfig {
     let secret_key = hex_to_u8_16(secret_key_hex);
 
     for network in &wifi_networks {
-        check_network(&network.ssid, &network.password);
+        check_ssid(&network.ssid);
     }
 
     FirmwareConfig {
@@ -90,8 +125,9 @@ pub fn secret_literal(secret: &[u8; 16]) -> String {
 
 pub fn wifi_network_literal(network: &FirmwareWifiNetwork) -> String {
     format!(
-        "meteo_core::wifi_pick::Network {{ ssid: {:?}, password: {:?} }}",
-        network.ssid, network.password
+        "meteo_core::wifi_pick::Network {{ ssid: {:?}, psk_hex: {:?} }}",
+        network.ssid,
+        wpa_psk_hex(&network.ssid, &network.password)
     )
 }
 
@@ -119,18 +155,47 @@ mod tests {
     use super::{
         FirmwareWifiNetwork,
         wifi_network_literal,
+        wpa_psk_hex,
     };
 
     #[test]
     fn wifi_network_literal_escapes_rust_string_special_characters() {
+        let psk = "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e";
         let network = FirmwareWifiNetwork {
-            ssid:     "quoted\"\\ssid".to_string(),
-            password: "line\nbreak".to_string(),
+            ssid:     "quoted\"\\ssid\n".to_string(),
+            password: psk.to_string(),
         };
 
         assert_eq!(
             wifi_network_literal(&network),
-            "meteo_core::wifi_pick::Network { ssid: \"quoted\\\"\\\\ssid\", password: \"line\\nbreak\" }"
+            format!(
+                "meteo_core::wifi_pick::Network {{ ssid: \"quoted\\\"\\\\ssid\\n\", psk_hex: \"{psk}\" }}"
+            )
         );
+    }
+
+    /// Тест-векторы IEEE 802.11i-2004, приложение H.4.
+    #[test]
+    fn psk_matches_ieee_802_11i_vectors() {
+        assert_eq!(
+            wpa_psk_hex("IEEE", "password"),
+            "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"
+        );
+        assert_eq!(
+            wpa_psk_hex("ThisIsASSID", "ThisIsAPassword"),
+            "0dc0d6eb90555ed6419756b9a15ec3e3209b63df707dd508d14581f8982721af"
+        );
+    }
+
+    #[test]
+    fn hex_psk_in_config_passes_through() {
+        let psk = "0DC0D6EB90555ED6419756B9A15EC3E3209B63DF707DD508D14581F8982721AF";
+        assert_eq!(wpa_psk_hex("any", psk), psk.to_ascii_lowercase());
+    }
+
+    #[test]
+    #[should_panic(expected = "8..=63")]
+    fn short_passphrase_is_rejected() {
+        let _ = wpa_psk_hex("ssid", "short");
     }
 }
