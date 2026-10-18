@@ -6,9 +6,11 @@ extern crate std;
 pub mod backlog;
 pub mod codec;
 pub mod datagram;
+pub mod health;
 pub mod led_color;
 pub mod recv_window;
 pub mod sender;
+pub mod sensors;
 #[cfg(feature = "std")]
 pub mod server;
 pub mod supervisor;

@@ -29,6 +29,9 @@ heapless = { version = "0.9", features = ["serde"] }
 # компиляции (wire.rs).
 postcard = { version = "1.1.3", default-features = false, features = ["experimental-derive"] }
 serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+# Слова журнала здоровья: у прошивки они в RTC-памяти, а `Persistable` esp-hal
+# реализован для атомиков portable-atomic (на riscv32imc нет нативного CAS).
+portable-atomic = { version = "1.15.0", default-features = false }
 
 [dev-dependencies]
 # Тесты гоняют и сторону приёмника (DST: модель сервера — настоящий `server`).
