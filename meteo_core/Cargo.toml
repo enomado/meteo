@@ -39,3 +39,9 @@ sntpc = { version = "0.11.0", default-features = false }
 # Тесты гоняют и сторону приёмника (DST: модель сервера — настоящий `server`).
 meteo_core = { path = ".", features = ["std"] }
 proptest = "1.11"
+# DST общей SPI-шины (`tests/shared_spi_dst.rs`): настоящий `SpiDevice` прошивки
+# против модели шины. Версии и фичи — как в графе `meteo` (без `time`).
+embassy-embedded-hal = "0.6.0"
+embassy-sync = "0.8.0"
+embedded-hal = "1.0"
+embedded-hal-async = "1.0"
