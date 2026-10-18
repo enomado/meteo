@@ -182,12 +182,16 @@ esp-backtrace = { path = "/home/sc/t/embed/esp-hal/esp-backtrace" }
 esp-rtos = { path = "/home/sc/t/embed/esp-hal/esp-rtos" }
 esp-phy = { path = "/home/sc/t/embed/esp-hal/esp-phy" }
 
-# libscd 0.5.1 + фикс: `start_low_power_periodic_measurement` не ставил
-# `measurement_started`, и драйвер пускал на шину команды, запрещённые во время
-# замера. Апстрим: SvetlinZarev/libscd#16 / PR #17. Снять патч, когда выйдет
-# релиз с фиксом (репо тихое — может не выйти).
+# libscd 0.5.1 + фиксы по даташиту SCD4x (ветка `scd4x-sim` форка, там же
+# симуляция датчика `tests/scd4x_sim.rs`, которая их нашла):
+# - `start_low_power_periodic_measurement` не ставил `measurement_started` ⇒
+#   драйвер пускал на шину команды, запрещённые во время замера
+#   (SvetlinZarev/libscd#16, PR #17) — это единственный фикс, задевающий нас;
+# - `get_sensor_variant` во время замера, `wake_up` без ACK, ASC-периоды не
+#   кратные 4 ч — методы, которые прошивка не зовёт.
+# Снять патч, когда выйдет релиз с фиксами (репо тихое — может не выйти).
 [patch.crates-io]
-libscd = { git = "https://github.com/enomado/libscd", rev = "0285d761e18be1bf590bba2f50fa3198e28685d3" }
+libscd = { git = "https://github.com/enomado/libscd", rev = "f2452ebf0fd4bff1de03fb4743140db198f2d810" }
 
 
 [features]

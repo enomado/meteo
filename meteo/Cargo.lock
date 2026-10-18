@@ -1595,7 +1595,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 [[package]]
 name = "libscd"
 version = "0.5.1"
-source = "git+https://github.com/enomado/libscd?rev=0285d761e18be1bf590bba2f50fa3198e28685d3#0285d761e18be1bf590bba2f50fa3198e28685d3"
+source = "git+https://github.com/enomado/libscd?rev=f2452ebf0fd4bff1de03fb4743140db198f2d810#f2452ebf0fd4bff1de03fb4743140db198f2d810"
 dependencies = [
  "embedded-hal-async",
 ]
