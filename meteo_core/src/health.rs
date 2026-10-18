@@ -300,6 +300,13 @@ impl<'a> Health<'a> {
         (health, Attach::Fresh)
     }
 
+    /// Журнал, уже подключённый на буте [`Health::attach`]: таски и
+    /// обработчик паники берут вид на те же слова, не трогая магию.
+    #[must_use]
+    pub const fn view(words: &'a [AtomicU32; WORDS]) -> Self {
+        Self { words }
+    }
+
     fn load(&self, word: Word) -> u32 {
         self.words[word.index()].load(Ordering::Relaxed)
     }

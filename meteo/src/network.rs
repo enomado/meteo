@@ -33,10 +33,16 @@ use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{
     AuthenticationMethodConfig,
     Config,
+    DisconnectReason,
     Interface,
     WifiController,
 };
 use meteo_core::datagram::BootId;
+use meteo_core::health::{
+    Health,
+    NetStage,
+    Word,
+};
 use meteo_core::sender::{
     Backlog,
     Mode,
@@ -66,7 +72,10 @@ use crate::sensor::{
     QUEUE_EVICTIONS,
     SENSOR_QUE,
 };
-use crate::watchdog::uptime;
+use crate::watchdog::{
+    health,
+    uptime,
+};
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
@@ -168,6 +177,75 @@ pub fn station_config(network: Network<'_>) -> Config {
     )
 }
 
+/// Код причины обрыва Wi-Fi для журнала: номер IEEE 802.11 (1–68) или ESP
+/// (200+), те же числа, что разбирает `DisconnectReason::from_raw` esp-radio
+/// (наружу он сырой код не отдаёт). 0 — вариант новее этой прошивки.
+const fn disconnect_code(reason: DisconnectReason) -> u32 {
+    match reason {
+        DisconnectReason::Unspecified => 1,
+        DisconnectReason::AuthenticationExpired => 2,
+        DisconnectReason::AuthenticationLeave => 3,
+        DisconnectReason::DisassociatedDueToInactivity => 4,
+        DisconnectReason::AssociationTooMany => 5,
+        DisconnectReason::Class2FrameFromNonAuthenticatedStation => 6,
+        DisconnectReason::Class3FrameFromNonAssociatedStation => 7,
+        DisconnectReason::AssociationLeave => 8,
+        DisconnectReason::AssociationNotAuthenticated => 9,
+        DisconnectReason::DisassociatedPowerCapabilityBad => 10,
+        DisconnectReason::DisassociatedUnsupportedChannel => 11,
+        DisconnectReason::BssTransitionDisassociated => 12,
+        DisconnectReason::IeInvalid => 13,
+        DisconnectReason::MicFailure => 14,
+        DisconnectReason::FourWayHandshakeTimeout => 15,
+        DisconnectReason::GroupKeyUpdateTimeout => 16,
+        DisconnectReason::IeIn4wayDiffers => 17,
+        DisconnectReason::GroupCipherInvalid => 18,
+        DisconnectReason::PairwiseCipherInvalid => 19,
+        DisconnectReason::AkmpInvalid => 20,
+        DisconnectReason::UnsupportedRsnIeVersion => 21,
+        DisconnectReason::InvalidRsnIeCapabilities => 22,
+        DisconnectReason::_802_1xAuthenticationFailed => 23,
+        DisconnectReason::CipherSuiteRejected => 24,
+        DisconnectReason::TdlsPeerUnreachable => 25,
+        DisconnectReason::TdlsUnspecified => 26,
+        DisconnectReason::SspRequestedDisassociation => 27,
+        DisconnectReason::NoSspRoamingAgreement => 28,
+        DisconnectReason::BadCipherOrAkm => 29,
+        DisconnectReason::NotAuthorizedThisLocation => 30,
+        DisconnectReason::ServiceChangePercludesTs => 31,
+        DisconnectReason::UnspecifiedQos => 32,
+        DisconnectReason::NotEnoughBandwidth => 33,
+        DisconnectReason::MissingAcks => 34,
+        DisconnectReason::ExceededTxOp => 35,
+        DisconnectReason::StationLeaving => 36,
+        DisconnectReason::EndBlockAck => 37,
+        DisconnectReason::UnknownBlockAck => 38,
+        DisconnectReason::Timeout => 39,
+        DisconnectReason::PeerInitiated => 46,
+        DisconnectReason::AccessPointInitiatedDisassociation => 47,
+        DisconnectReason::InvalidFtActionFrameCount => 48,
+        DisconnectReason::InvalidPmkid => 49,
+        DisconnectReason::InvalidMde => 50,
+        DisconnectReason::InvalidFte => 51,
+        DisconnectReason::TransmissionLinkEstablishmentFailed => 67,
+        DisconnectReason::AlterativeChannelOccupied => 68,
+        DisconnectReason::BeaconTimeout => 200,
+        DisconnectReason::NoAccessPointFound => 201,
+        DisconnectReason::AuthenticationFailed => 202,
+        DisconnectReason::AssociationFailed => 203,
+        DisconnectReason::HandshakeTimeout => 204,
+        DisconnectReason::ConnectionFailed => 205,
+        DisconnectReason::AccessPointTsfReset => 206,
+        DisconnectReason::Roaming => 207,
+        DisconnectReason::AssociationComebackTimeTooLong => 208,
+        DisconnectReason::SaQueryTimeout => 209,
+        DisconnectReason::NoAccessPointFoundWithCompatibleSecurity => 210,
+        DisconnectReason::NoAccessPointFoundInAuthmodeThreshold => 211,
+        DisconnectReason::NoAccessPointFoundInRssiThreshold => 212,
+        _ => 0,
+    }
+}
+
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
@@ -191,10 +269,16 @@ pub async fn connection(mut controller: WifiController<'static>) {
                 let info = controller.wait_for_disconnect_async().await.ok();
                 println!("Disconnected: {:?}", info);
                 set_status(SYS_NO_WIFI);
+                let health = health();
+                health.bump(Word::WifiDisconnects);
+                if let Some(info) = info {
+                    health.set(Word::WifiLastReason, disconnect_code(info.reason));
+                }
             }
             Err(e) => {
                 println!("Failed to connect to wifi: {:?}", e);
                 set_status(SYS_NO_WIFI);
+                health().bump(Word::WifiConnectFailures);
             }
         }
 
@@ -238,6 +322,8 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     let mut tx_buffer = [0; TX_BUF];
     let mut incoming = [0u8; RX_BUF];
 
+    let health = health();
+    health.set(Word::NetStage, NetStage::WaitLink.code());
     stack.wait_link_up().await;
     stack.wait_config_up().await;
 
@@ -258,6 +344,9 @@ pub async fn network_send_loop(stack: Stack<'static>) {
     // `new` от массива фиксированной длины упасть не может.
     let mut sender = Sender::new(Aes128Gcm::new(&SECRET_KEY.into()), boot, uptime(), BACKLOG.take());
     let mut mode = sender.mode();
+    // Счётчик `net.ack_failures` растёт на переходе «отвечал → перестал»: сколько
+    // раз сервер пропадал, а не сколько повторов было за один обрыв.
+    let mut was_reachable = true;
 
     loop {
         // heartbeat для watchdog: итерация ограничена по времени (отправка —
@@ -265,15 +354,25 @@ pub async fn network_send_loop(stack: Stack<'static>) {
         // лежащем сервере: повтор — не зависание.
         crate::watchdog::beat_net();
 
-        take_readings(&mut sender).await;
+        health.set(Word::NetStage, NetStage::TakeReadings.code());
+        take_readings(&mut sender, &health).await;
+        // Снимок каждый оборот: тот же — отправитель его не заметит, новый
+        // поедет ближайшей датаграммой.
+        sender.on_health(health.snapshot());
+        health.set(Word::NetStage, NetStage::Send.code());
         send_due(&socket, server, &mut sender).await;
 
         // Один писатель бита: эта таска, по слову автомата.
-        if sender.server_reachable() {
+        let reachable = sender.server_reachable();
+        if reachable {
             clear_status(SYS_NO_SERVER);
         } else {
             set_status(SYS_NO_SERVER);
+            if was_reachable {
+                health.bump(Word::AckFailures);
+            }
         }
+        was_reachable = reachable;
 
         let idle_end = Instant::now() + MAX_IDLE;
         let wake = sender.deadline().map_or(idle_end, |d| {
@@ -281,6 +380,7 @@ pub async fn network_send_loop(stack: Stack<'static>) {
                 idle_end.min(Instant::from_micros(deadline_micros))
             })
         });
+        health.set(Word::NetStage, NetStage::Wait.code());
         match with_deadline(wake, socket.recv_from(&mut incoming)).await {
             Ok(Ok((len, meta))) if meta.endpoint == server => {
                 if let Err(e) = sender.on_datagram(&mut incoming[..len], uptime()) {
@@ -305,17 +405,20 @@ pub async fn network_send_loop(stack: Stack<'static>) {
 /// Забрать показания из передаточной очереди в бэклог. `SYS_BUF_OVERFLOW` —
 /// один писатель, эта таска: потеря в очереди (счётчик sensor-таски) или
 /// вытеснение из бэклога ставят бит, забор без потерь его гасит.
-async fn take_readings(sender: &mut Sender<'_>) {
+async fn take_readings(sender: &mut Sender<'_>, health: &Health<'_>) {
     // Замок только на перекладку — не через await'ы сокета, иначе
     // sensor-таска ждала бы его на enqueue.
     let mut queue = SENSOR_QUE.lock().await;
     if queue.is_empty() {
         return;
     }
-    let mut lost = queue_losses_since_last_take();
+    let queue_losses = queue_losses_since_last_take();
+    health.add(Word::QueueEvictions, queue_losses);
+    let mut lost = queue_losses > 0;
     while let Some(reading) = queue.dequeue() {
         if let Some(evicted) = sender.on_reading(reading) {
             println!("net: backlog full, dropped reading at {}", evicted.time.0);
+            health.bump(Word::BacklogEvictions);
             lost = true;
         }
     }
@@ -326,11 +429,11 @@ async fn take_readings(sender: &mut Sender<'_>) {
     }
 }
 
-/// Были ли потери в передаточной очереди с прошлого забора.
-fn queue_losses_since_last_take() -> bool {
+/// Сколько показаний вытеснено из передаточной очереди с прошлого забора.
+fn queue_losses_since_last_take() -> u32 {
     static SEEN: AtomicU32 = AtomicU32::new(0);
     let now = QUEUE_EVICTIONS.load(Ordering::Relaxed);
-    SEEN.swap(now, Ordering::Relaxed) != now
+    now.wrapping_sub(SEEN.swap(now, Ordering::Relaxed))
 }
 
 /// Отправить всё, что автомат считает пора отправить.

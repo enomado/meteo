@@ -30,6 +30,14 @@ use esp_hal::rtc_cntl::{
 };
 use esp_hal::time::Duration as HalDuration;
 use esp_println::println;
+use meteo_core::health::{
+    Attach,
+    Health,
+    NetStage,
+    WORDS,
+    Word,
+};
+use meteo_core::sensors::OpCode;
 use meteo_core::supervisor::{
     BootFault,
     Heartbeat,
@@ -38,7 +46,6 @@ use meteo_core::supervisor::{
     TaskHeartbeats,
     Uptime,
     Verdict,
-    classify,
 };
 use portable_atomic::{
     AtomicU32,
@@ -62,28 +69,22 @@ pub fn beat_net() {
 }
 
 // ---------------------------------------------------------------------------
-// Причина reset: железо + маркер паники (RTC fast RAM)
+// Журнал здоровья в RTC fast RAM: причина reset, счётчики сбоев, место зависания
 //
 // Проблема: авто-reset (custom_halt / RWDT) чинит зависание, но ПРЯЧЕТ факт
 // проблемы — без serial мы бы не узнали, что что-то падало. На буте определяем
-// причину и мигаем отличимым LED-кодом.
+// причину, мигаем отличимым LED-кодом и пишем её в журнал, который уходит на
+// сервер (`meteo_core::health`).
 //
 // Оракул причины — регистр reset reason (`esp_hal::system::reset_reason`), а не
-// запись «перед смертью»: столл, ради которого стоит RWDT, — это вставший
-// executor, и watchdog-таска в нём же ⇒ писать маркер некому. RTC-маркер нужен
-// только для паники: по железу она неотличима от штатного `software_reset`.
+// запись «перед смертью»: столл, ради которого стоит RWDT, может быть вставшим
+// executor'ом, и watchdog-таска в нём же. Маркер паники нужен потому, что по
+// железу паника неотличима от штатного `software_reset`.
 //
-// portable_atomic::AtomicU32 реализует esp_hal::Persistable ⇒ кладём в
-// persistent-секцию без `static mut`/unsafe. На холодном старте содержимое —
-// мусор, поэтому валидность области проверяем магическим словом.
+// portable_atomic::AtomicU32 (и массив из них) реализует esp_hal::Persistable ⇒
+// кладём в persistent-секцию без `static mut`/unsafe. На холодном старте
+// содержимое — мусор: журнал проверяет свою магию сам.
 // ---------------------------------------------------------------------------
-
-/// "mt" + версия формата. Отличает валидную область от мусора холодного старта.
-/// Версия 2: слово причины хранит только маркер паники, счётчик ведёт бут.
-const FAULT_MAGIC: u32 = 0x6D74_0002;
-
-/// Значение `RTC_PANIC_MARK`, записанное `custom_halt` перед reset.
-const PANIC_MARK: u32 = 1;
 
 /// Итог определения причины boot'а.
 pub struct BootReport {
@@ -95,12 +96,13 @@ pub struct BootReport {
 }
 
 #[ram(unstable(rtc_fast, persistent))]
-static RTC_MAGIC: AtomicU32 = AtomicU32::new(0);
-#[ram(unstable(rtc_fast, persistent))]
-static RTC_PANIC_MARK: AtomicU32 = AtomicU32::new(0);
-/// Сколько раз страховки срабатывали с последнего power-on (копится за сессию).
-#[ram(unstable(rtc_fast, persistent))]
-static RTC_FAULT_COUNT: AtomicU32 = AtomicU32::new(0);
+static RTC_HEALTH: [AtomicU32; WORDS] = [const { AtomicU32::new(0) }; WORDS];
+
+/// Журнал здоровья (подключён на буте [`take_boot_fault`]).
+#[must_use]
+pub const fn health() -> Health<'static> {
+    Health::view(&RTC_HEALTH)
+}
 
 /// Сводит причину reset ESP32-C3 к классу, по которому решает `classify`.
 /// `match` исчерпывающий: новая причина в esp-hal не соберётся молча.
@@ -129,35 +131,25 @@ const fn reset_kind(reason: Option<SocResetReason>) -> ResetKind {
     }
 }
 
-/// Определить причину ТЕКУЩЕГО boot'а и перевзвести маркер на будущее.
-/// Вызывать один раз в начале main.
+/// Определить причину ТЕКУЩЕГО boot'а и учесть её в журнале.
+/// Вызывать один раз в начале main, до спавна тасок.
 ///
-/// Power-on или невалидная магия ⇒ область RTC инициализируется заново (счётчик
-/// с нуля). Маркер паники гасится всегда, чтобы будущий штатный reset не показал
-/// устаревшую причину. Счётчик растёт на буте, если причина — сбой: RWDT-reset
-/// может стереть RTC-область, тогда счёт начнётся с этого сбоя.
+/// Power-on или чужая магия ⇒ журнал обнуляется. Служебные слова прошлой
+/// загрузки (маркер паники, этапы тасок) журнал гасит сам после разбора.
+#[must_use]
 pub fn take_boot_fault() -> BootReport {
     let reset_reason = esp_hal::system::reset_reason();
     let kind = reset_kind(reset_reason);
-
-    let area_valid = RTC_MAGIC.load(Ordering::Relaxed) == FAULT_MAGIC && kind != ResetKind::PowerOn;
-    if !area_valid {
-        RTC_MAGIC.store(FAULT_MAGIC, Ordering::Relaxed);
-        RTC_PANIC_MARK.store(0, Ordering::Relaxed);
-        RTC_FAULT_COUNT.store(0, Ordering::Relaxed);
+    let (health, attach) = Health::attach(&RTC_HEALTH, kind == ResetKind::PowerOn);
+    if attach == Attach::Fresh && kind != ResetKind::PowerOn {
+        println!("BOOT: health journal was not valid, started afresh");
     }
-
-    let panic_marked = RTC_PANIC_MARK.load(Ordering::Relaxed) == PANIC_MARK;
-    RTC_PANIC_MARK.store(0, Ordering::Relaxed);
-
-    let fault = classify(kind, panic_marked);
-    if fault != BootFault::Clean {
-        RTC_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
+    // Код — аппаратный номер причины из TRM; 0 — esp-hal его не описывает.
+    let fault = health.record_boot(kind, reset_reason.map_or(0, |r| r as u32));
 
     BootReport {
         fault,
-        faults_since_power_on: RTC_FAULT_COUNT.load(Ordering::Relaxed),
+        faults_since_power_on: health.faults_since_power_on(),
         reset_reason,
     }
 }
@@ -168,9 +160,9 @@ pub fn take_boot_fault() -> BootReport {
 /// линкуется по имени из extern-декларации внутри esp-backtrace.
 #[unsafe(no_mangle)]
 extern "Rust" fn custom_halt() -> ! {
-    // Пометить панику для LED-сигнала после reset (по железу это обычный
-    // software reset), затем перезагрузиться. Магию ставит бут.
-    RTC_PANIC_MARK.store(PANIC_MARK, Ordering::Relaxed);
+    // Пометить панику для LED-сигнала и журнала после reset (по железу это
+    // обычный software reset), затем перезагрузиться.
+    health().mark_panic();
     esp_hal::system::software_reset()
 }
 
@@ -207,19 +199,35 @@ pub async fn watchdog_loop(mut rwdt: Rwdt) {
 
     let initial_heartbeats = heartbeats();
     let mut supervisor = Supervisor::new(uptime(), initial_heartbeats);
+    let mut stall_recorded = false;
 
     loop {
         Timer::after(FEED_INTERVAL).await;
 
+        let now = uptime();
         let current_heartbeats = heartbeats();
-        match supervisor.tick(uptime(), current_heartbeats) {
-            Verdict::Feed => rwdt.feed(),
+        match supervisor.tick(now, current_heartbeats) {
+            Verdict::Feed => {
+                rwdt.feed();
+                // Время жизни — на случай, если встанет весь executor и
+                // записать зависание будет некому.
+                health().alive(now);
+            }
             Verdict::Withhold { sensor_ok, net_ok } => {
                 // НЕ кормим → RWDT ресетит через свой hw-таймаут. Лог успеет
-                // уйти. Причину следующий бут прочитает из регистра reset reason.
+                // уйти. Кто встал и на каком этапе — в журнал (один раз: дальше
+                // этапы уже не меняются), причину следующий бут прочитает из
+                // регистра reset reason.
+                if !stall_recorded {
+                    health().record_stall(sensor_ok, net_ok, now);
+                    stall_recorded = true;
+                }
                 println!(
-                    "watchdog: STALL sensor_ok={} net_ok={} → withholding feed, reset imminent",
-                    sensor_ok, net_ok
+                    "watchdog: STALL sensor_ok={} net_ok={} sensor_stage={} net_stage={} → withholding feed, reset imminent",
+                    sensor_ok,
+                    net_ok,
+                    OpCode(health().get(Word::SensorStage)).name(),
+                    NetStage::name_of(health().get(Word::NetStage)),
                 );
             }
         }

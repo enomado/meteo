@@ -1704,6 +1704,7 @@ dependencies = [
  "aes-gcm",
  "heapless 0.9.3",
  "libm",
+ "portable-atomic",
  "postcard",
  "serde",
 ]

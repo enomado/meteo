@@ -21,6 +21,7 @@ use embassy_time::{
     with_timeout,
 };
 use esp_println::println;
+use meteo_core::health::Word;
 use meteo_core::wire::EpochMillis;
 use portable_atomic::{
     AtomicI64,
@@ -33,6 +34,8 @@ use sntpc::{
 };
 use sntpc_net_embassy::UdpSocketWrapper;
 use sntpc_time_embassy::EmbassyTimestampGenerator;
+
+use crate::watchdog::health;
 
 const NTP_SERVER: &str = "pool.ntp.org";
 const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
@@ -124,12 +127,19 @@ async fn try_sync(stack: Stack<'_>) -> bool {
 
     let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack)).await else {
         println!("ntp: timeout!");
+        health().bump(Word::NtpFailures);
         return false;
     };
 
-    let Some(pp) = res else { return false };
+    let Some(pp) = res else {
+        health().bump(Word::NtpFailures);
+        return false;
+    };
 
     CURRENT_OFFSET_US.store(pp.offset(), Ordering::Relaxed);
+    // Журнал ставит время сбоям по этому смещению (и восстановит время
+    // зависания после reset).
+    health().clock_synced(crate::watchdog::uptime(), now_epoch().0);
     true
 }
 

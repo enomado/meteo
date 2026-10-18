@@ -5,11 +5,21 @@
     reason = "аппаратные futures датчиков исполняются одним ESP32-C3 Embassy executor"
 )]
 
+//! Sensor-таска: драйвер автомата `meteo_core::sensors` на настоящих шинах.
+//!
+//! Что опрашивать и когда, как восстанавливаться и что считать сбоем, решает
+//! автомат (с DST на хосте). Здесь — исполнение операций: каждая идёт через
+//! [`perform`] под `with_timeout(op.timeout())`, поэтому ни одно ожидание шины
+//! не длится вечно. Снятая по таймауту future esp-hal в своём `Drop`
+//! сбрасывает автомат I2C с очисткой шины.
+
+use bmp390_rs::error::Bmp390Error;
 use bmp390_rs::register::int_status::IntStatus;
 use bmp390_rs::{
     Bmp390,
     ResetPolicy,
 };
+use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_sync::blocking_mutex::raw::{
     CriticalSectionRawMutex,
     NoopRawMutex,
@@ -18,7 +28,9 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{
     Delay,
     Duration,
+    Instant,
     Timer,
+    with_timeout,
 };
 use esp_hal::gpio::{
     Level,
@@ -27,6 +39,7 @@ use esp_hal::gpio::{
 };
 use esp_hal::i2c::master::{
     Config as I2cConfig,
+    Error as I2cError,
     I2c,
 };
 use esp_hal::peripherals::{
@@ -43,18 +56,31 @@ use esp_hal::spi::master::Spi;
 use esp_hal::time::Rate;
 use esp_println::println;
 use libscd::asynchronous::scd4x::Scd4x;
+use libscd::error::Error as ScdError;
 use meteo_core::backlog::{
     SensorQueue,
     push_evicting,
 };
 use meteo_core::codec::{
-    CentiPascal,
     MilliCelsius,
-    MilliPercentRh,
-    Ppm,
     Reading,
 };
-use meteo_core::wire::EpochMillis;
+use meteo_core::health::{
+    Health,
+    Word,
+};
+use meteo_core::sensors::{
+    Action,
+    BaroRaw,
+    Cycle,
+    Fault,
+    Op,
+    OpCode,
+    OpResult,
+    ScdRaw,
+    Sensors,
+};
+use meteo_core::supervisor::Uptime;
 use portable_atomic::{
     AtomicU32,
     Ordering,
@@ -72,248 +98,17 @@ use crate::ntp_client::{
     now_epoch,
 };
 use crate::spi_helper::BarometerArgs;
+use crate::watchdog::{
+    health,
+    uptime,
+};
 
-pub type BarometerDevice<'a> = Bmp390<
-    bmp390_rs::bus::Spi<
-        embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice<
-            'a,
-            NoopRawMutex,
-            Spi<'a, esp_hal::Async>,
-            Output<'a>,
-        >,
-    >,
->;
+type BaroSpi = Mutex<NoopRawMutex, Spi<'static, esp_hal::Async>>;
+
+pub type BarometerDevice<'a> =
+    Bmp390<bmp390_rs::bus::Spi<SpiDevice<'a, NoopRawMutex, Spi<'static, esp_hal::Async>, Output<'a>>>>;
 
 pub type ScdDevice<'a> = Scd4x<I2c<'a, esp_hal::Async>, Delay>;
-
-/// Показание BMP390 как его отдаёт драйвер: давление, Па; температура, °C.
-struct BaroSample {
-    pressure: f32,
-    temp:     f32,
-}
-
-/// Показание SCD41 как его отдаёт драйвер: CO2, ppm; влажность, %; температура, °C.
-struct ScdSample {
-    co2:      u16,
-    humidity: f32,
-    temp:     f32,
-}
-
-/// Канал в фиксированной точке. Не перевелось (NaN/∞/вне i32) ⇒ канал
-/// отсутствует и это видно в логе: на провод NaN не попадает.
-fn channel<T>(name: &str, raw: f32, convert: impl FnOnce(f32) -> Option<T>) -> Option<T> {
-    let value = convert(raw);
-    if value.is_none() {
-        println!("{}: value {} not representable, channel dropped", name, raw);
-    }
-    value
-}
-
-/// Строка для отправки из показаний датчиков этого цикла.
-fn to_reading(time: EpochMillis, baro: Option<&BaroSample>, scd: Option<&ScdSample>) -> Reading {
-    Reading {
-        time,
-        pressure: baro.and_then(|b| channel("BMP390 pressure", b.pressure, CentiPascal::from_pascal)),
-        baro_temp: baro.and_then(|b| channel("BMP390 temp", b.temp, MilliCelsius::from_celsius)),
-        co2: scd.map(|s| Ppm(s.co2)),
-        humidity: scd.and_then(|s| channel("SCD41 humidity", s.humidity, MilliPercentRh::from_percent)),
-        scd_temp: scd.and_then(|s| channel("SCD41 temp", s.temp, MilliCelsius::from_celsius)),
-    }
-}
-
-/// Предел опросов `data_ready` (раз в секунду). Single-shot SCD41 длится 5с по
-/// даташиту, ×2 запас. Без предела датчик, вечно отвечающий «не готов», вешал
-/// sensor-таску ⇒ через `SENSOR_STALL_LIMIT` watchdog ресетил весь чип.
-const SCD_READY_POLLS: u32 = 10;
-
-/// Поллит `data_ready` раз в секунду до Ok(true), не дольше `SCD_READY_POLLS`.
-/// Возвращает `false`, если поллинг прерван ошибкой шины или исчерпан предел.
-async fn wait_scd_ready(scd: &mut ScdDevice<'_>) -> bool {
-    for _ in 0..SCD_READY_POLLS {
-        Timer::after(Duration::from_secs(1)).await;
-        match scd.data_ready().await {
-            Ok(true) => return true,
-            Ok(false) => {}
-            Err(e) => {
-                println!("SCD41: data_ready error: {:?}", e);
-                return false;
-            }
-        }
-    }
-    println!("SCD41: data not ready after {} polls", SCD_READY_POLLS);
-    false
-}
-
-/// Один замер SCD41: single-shot → ожидание `data_ready` → чтение.
-/// `None` — замер в этом цикле не удался (причина уже в логе); вызывающий
-/// гасит CO2 на LED и поднимает `SYS_NO_PERIPH`.
-async fn measure_scd(scd: &mut ScdDevice<'_>) -> Option<ScdSample> {
-    if let Err(e) = scd.measure_single_shot().await {
-        println!("SCD41: single shot error: {:?}", e);
-        return None;
-    }
-
-    if !wait_scd_ready(scd).await {
-        return None;
-    }
-
-    match scd.read_measurement().await {
-        Ok(m) => {
-            println!("SCD41: CO2={} T={:.2} H={:.2}", m.co2, m.temperature, m.humidity);
-            Some(ScdSample {
-                co2:      m.co2,
-                humidity: m.humidity,
-                temp:     m.temperature,
-            })
-        }
-        Err(e) => {
-            println!("SCD41: read error: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Результат одного опроса BMP390. «Ещё не готов» — штатное состояние (ODR
-/// ~0.05 Гц), а не ошибка: реакция на них разная, поэтому состояния разведены.
-enum BaroPoll {
-    Ready(BaroSample),
-    NotReady,
-    /// Ошибка шины. НЕ паникуем (было: `.unwrap()` → reset всего чипа на
-    /// транзиенте SPI) — вызывающий решает, ретраить или пропустить цикл.
-    Failed,
-}
-
-/// Переводит давление BMP390 в целые гПа, допустимые для `SCD4x`.
-/// `SCD4x` принимает 700–1200 гПа; недопустимое давление не должно менять
-/// последнюю валидную компенсацию.
-fn scd_ambient_pressure_hpa(pressure_pa: f32) -> Option<u16> {
-    const MIN_PRESSURE_PA: f32 = 70_000.0;
-    const MAX_PRESSURE_PA: f32 = 120_000.0;
-
-    if !pressure_pa.is_finite() || !(MIN_PRESSURE_PA..=MAX_PRESSURE_PA).contains(&pressure_pa) {
-        return None;
-    }
-
-    // API SCD4x принимает целые гПа; сохраняем прежнее усечение дробной части.
-    // К этому cast дошли только для конечного давления в диапазоне 700–1200 гПа.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "после проверки конечного диапазона результат в 700..=1200 гПа, дробная часть намеренно отбрасывается"
-    )]
-    let ambient_hpa = (pressure_pa / 100.0) as u16;
-    Some(ambient_hpa)
-}
-
-/// Один опрос BMP390: статус `drdy` → чтение. Ошибки шины логируются здесь,
-/// решение (ретрай / пропуск цикла / `SYS_NO_PERIPH`) принимает вызывающий.
-async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> BaroPoll {
-    match barometer.read::<IntStatus>().await {
-        Ok(status) if !status.drdy => BaroPoll::NotReady,
-        Ok(_) => {
-            match barometer.read_sensor_data().await {
-                Ok(data) => {
-                    BaroPoll::Ready(BaroSample {
-                        pressure: data.pressure(),
-                        temp:     data.temperature(),
-                    })
-                }
-                Err(e) => {
-                    println!("BMP390: read_sensor_data error: {:?}", e);
-                    BaroPoll::Failed
-                }
-            }
-        }
-        Err(e) => {
-            println!("BMP390: status read error: {:?}", e);
-            BaroPoll::Failed
-        }
-    }
-}
-
-/// Калибровка SCD41 temperature offset по показанию BMP390.
-/// Делает single-shot SCD41, ждёт drdy на барометре, считает дельту и пишет новый offset.
-/// Если барометра нет / он не отдал данные — offset не трогаем.
-async fn calibrate_temp_offset(scd: &mut ScdDevice<'_>, barometer: Option<&mut BarometerDevice<'_>>) {
-    if let Err(e) = scd.measure_single_shot().await {
-        println!("SCD41 cal: single shot error: {:?}", e);
-        return;
-    }
-    if !wait_scd_ready(scd).await {
-        return;
-    }
-    let Ok(m) = scd.read_measurement().await else {
-        return;
-    };
-
-    // BMP390 температура — до 10 попыток по 2 сек. Ошибку шины НЕ паникуем и НЕ
-    // сдаёмся сразу: транзиент шины может пройти → ретраим в пределах того же
-    // бюджета попыток (как и ожидание drdy). Жёсткий предел остаётся: калибровка
-    // на старте, блокировать её навсегда нельзя — иначе не пойдут CO2-данные.
-    let mut bmp_temp = None;
-    if let Some(barometer) = barometer {
-        for _ in 0..10 {
-            if let BaroPoll::Ready(reading) = poll_barometer(barometer).await {
-                bmp_temp = Some(reading.temp);
-                break;
-            }
-            Timer::after(Duration::from_secs(2)).await;
-        }
-    }
-
-    let Some(t_bmp) = bmp_temp else {
-        println!("SCD41 cal: BMP390 not ready, skipping temp offset");
-        return;
-    };
-
-    // Текущий offset неизвестен ⇒ новый не из чего считать: подставленное
-    // число (было `unwrap_or(4.0)`) записало бы в датчик выдуманную поправку.
-    let offset_old = match scd.get_temperature_offset().await {
-        Ok(offset) => offset,
-        Err(e) => {
-            println!("SCD41 cal: offset read error: {:?}, skipping temp offset", e);
-            return;
-        }
-    };
-    // offset не может быть отрицательным (ограничение датчика).
-    let offset_new = (m.temperature - t_bmp + offset_old).max(0.0);
-    println!(
-        "SCD41 cal: T_scd={:.2} T_bmp={:.2} offset {:.2} -> {:.2}",
-        m.temperature, t_bmp, offset_old, offset_new
-    );
-    let _ = scd.set_temperature_offset(offset_new).await;
-}
-
-pub async fn get_barometer_spi<'a>(
-    spi_bus: &'a Mutex<NoopRawMutex, Spi<'a, esp_hal::Async>>,
-    cs_pin: GPIO10<'a>,
-) -> Option<BarometerDevice<'a>> {
-    let cs_pin = Output::new(cs_pin, Level::High, OutputConfig::default());
-    let spi_device = embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice::new(spi_bus, cs_pin);
-
-    let mut delay = Delay;
-
-    let config = bmp390_rs::config::Configuration::default()
-        .output_data_rate(bmp390_rs::register::odr::OutputDataRate::R0p05Hz) // ~20 сек
-        .pressure_oversampling(bmp390_rs::register::osr::Oversampling::X32)
-        .temperature_oversampling(bmp390_rs::register::osr::Oversampling::X8)
-        .iir_filter_coefficient(bmp390_rs::register::config::IIRFilterCoefficient::Coef3);
-
-    // если ResetPolicy::Soft
-    // Issue CMD=0xB6 and wait for `STATUS.cmd_rdy` (recommended default).
-    // но не успевает законфигурироваться и молчит - циферки не меняет
-
-    Timer::after(Duration::from_millis(150)).await;
-
-    match Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut delay).await {
-        Ok(device) => Some(device),
-        Err(err) => {
-            println!("BMP390: init failed: {:?}", err);
-            println!("BMP390: continuing without barometer");
-            None
-        }
-    }
-}
 
 /// Передаточная очередь показаний к сетевой таске (ёмкость и вытеснение —
 /// `meteo_core::backlog`).
@@ -345,6 +140,181 @@ pub struct SensorPeripherals<'a> {
     pub i2c_scl:  GPIO2<'a>,
 }
 
+/// Сбой SCD41 по ошибке драйвера.
+const fn scd_fault(error: &ScdError<I2cError>) -> Fault {
+    match error {
+        ScdError::I2C(I2cError::Timeout) => Fault::Timeout,
+        ScdError::I2C(_) => Fault::Bus,
+        ScdError::CRC => Fault::Crc,
+        ScdError::NotAllowed | ScdError::InvalidInput => Fault::Rejected,
+    }
+}
+
+/// Сбой BMP390 по ошибке драйвера.
+const fn baro_fault<E>(error: &Bmp390Error<E>) -> Fault {
+    match error {
+        Bmp390Error::Bus(_) | Bmp390Error::NotConnected => Fault::Bus,
+        Bmp390Error::UnexpectedRegisterData(_) | Bmp390Error::UnexpectedFifoData => Fault::Crc,
+        Bmp390Error::Timeout => Fault::Timeout,
+    }
+}
+
+fn scd_done(result: Result<(), ScdError<I2cError>>) -> OpResult {
+    result.map_or_else(|e| OpResult::Failed(scd_fault(&e)), |()| OpResult::Done)
+}
+
+/// Исполнить операцию автомата (кроме `BaroInit` — она открывает новую сессию
+/// драйвера BMP390, см. [`sensor_loop`]). Звать только под `op.timeout()`.
+async fn perform(op: Op, scd: &mut ScdDevice<'_>, baro: Option<&mut BarometerDevice<'_>>) -> OpResult {
+    match op {
+        Op::ScdStop => scd_done(scd.stop_periodic_measurement().await),
+        Op::ScdReinit => scd_done(scd.reinit().await),
+        Op::ScdSerial => scd_done(scd.serial_number().await.map(|_| ())),
+        Op::ScdGetTempOffset => {
+            match scd.get_temperature_offset().await {
+                Ok(c) => {
+                    MilliCelsius::from_celsius(c)
+                        .map_or(OpResult::Failed(Fault::BadValue), OpResult::TempOffset)
+                }
+                Err(e) => OpResult::Failed(scd_fault(&e)),
+            }
+        }
+        Op::ScdSetTempOffset(offset) => {
+            // Смещение — единицы °C, в f32 точно.
+            #[allow(clippy::cast_possible_truncation)]
+            let celsius = offset.celsius() as f32;
+            scd_done(scd.set_temperature_offset(celsius).await)
+        }
+        Op::ScdStart => scd_done(scd.start_low_power_periodic_measurement().await),
+        Op::ScdDataReady => {
+            scd.data_ready()
+                .await
+                .map_or_else(|e| OpResult::Failed(scd_fault(&e)), OpResult::Ready)
+        }
+        Op::ScdRead => {
+            scd.read_measurement().await.map_or_else(
+                |e| OpResult::Failed(scd_fault(&e)),
+                |m| {
+                    OpResult::Scd(ScdRaw {
+                        co2:      m.co2,
+                        temp_c:   m.temperature,
+                        humidity: m.humidity,
+                    })
+                },
+            )
+        }
+        Op::ScdSetPressure(hpa) => scd_done(scd.set_ambient_pressure(hpa.0).await),
+        Op::BaroPoll => {
+            // Автомат опрашивает BMP390 только после удачной инициализации
+            // этой сессии (DST: «polled before init»).
+            poll_barometer(baro.expect("BMP390 is polled only after its init succeeded")).await
+        }
+        Op::BaroInit => unreachable!("BaroInit opens a new barometer session in sensor_loop"),
+    }
+}
+
+/// Один опрос BMP390: статус `drdy` → чтение.
+async fn poll_barometer(barometer: &mut BarometerDevice<'_>) -> OpResult {
+    match barometer.read::<IntStatus>().await {
+        Ok(status) if !status.drdy => OpResult::Baro(None),
+        Ok(_) => {
+            barometer.read_sensor_data().await.map_or_else(
+                |e| OpResult::Failed(baro_fault(&e)),
+                |data| {
+                    OpResult::Baro(Some(BaroRaw {
+                        pressure_pa: data.pressure(),
+                        temp_c:      data.temperature(),
+                    }))
+                },
+            )
+        }
+        Err(e) => OpResult::Failed(baro_fault(&e)),
+    }
+}
+
+/// Создать драйвер BMP390 на CS `cs` (проверка id, запись конфигурации).
+async fn init_barometer<'a>(spi_bus: &'a BaroSpi, cs: GPIO10<'a>) -> Result<BarometerDevice<'a>, Fault> {
+    let cs = Output::new(cs, Level::High, OutputConfig::default());
+    let spi_device = SpiDevice::new(spi_bus, cs);
+
+    let config = bmp390_rs::config::Configuration::default()
+        .output_data_rate(bmp390_rs::register::odr::OutputDataRate::R0p05Hz) // ~20 сек
+        .pressure_oversampling(bmp390_rs::register::osr::Oversampling::X32)
+        .temperature_oversampling(bmp390_rs::register::osr::Oversampling::X8)
+        .iir_filter_coefficient(bmp390_rs::register::config::IIRFilterCoefficient::Coef3);
+
+    // ResetPolicy::Soft (CMD=0xB6 + ожидание `cmd_rdy`) не успевает
+    // сконфигурироваться и молчит — циферки не меняет. Поэтому без сброса,
+    // с паузой на подачу питания.
+    Timer::after(Duration::from_millis(150)).await;
+    Bmp390::new_spi(spi_device, config, ResetPolicy::None, &mut Delay)
+        .await
+        .map_err(|e| {
+            println!("BMP390: init failed: {:?}", e);
+            baro_fault(&e)
+        })
+}
+
+fn instant(at: Uptime) -> Instant {
+    Instant::from_micros(u64::try_from(at.0.as_micros()).unwrap_or(u64::MAX))
+}
+
+fn report_failure(op: Op, result: &OpResult) {
+    if let OpResult::Failed(fault) = result {
+        println!("{}: {:?}", op.code().name(), fault);
+    }
+}
+
+/// Итог цикла: LED, `SYS_NO_PERIPH`, показание в очередь (после первого NTP).
+async fn finish_cycle(cycle: Cycle, ntp_synced: bool) {
+    let s = cycle.sample;
+    match s.co2 {
+        Some(co2) => publish_co2(co2),
+        None => clear_co2(),
+    }
+    if cycle.periph_ok {
+        clear_status(SYS_NO_PERIPH);
+    } else {
+        set_status(SYS_NO_PERIPH);
+    }
+    println!(
+        "cycle: co2={:?} T_scd={:?} H={:?} P={:?} T_bmp={:?}",
+        s.co2.map(|c| c.0),
+        s.scd_temp.map(|t| t.0),
+        s.humidity.map(|h| h.0),
+        s.pressure.map(|p| p.0),
+        s.baro_temp.map(|t| t.0),
+    );
+    // В серверный буфер — только с доверенным временем: до первого NTP-синка
+    // часы идут от вшитого значения. Показание без каналов не кладём.
+    if ntp_synced {
+        let reading = s.into_reading(now_epoch());
+        if reading.has_any_channel() {
+            enqueue_reading(reading).await;
+        }
+    }
+}
+
+/// Исполнить операцию под её пределом, с этапом таски в журнале.
+async fn run_op(
+    op: Op,
+    scd: &mut ScdDevice<'_>,
+    baro: Option<&mut BarometerDevice<'_>>,
+    health: &Health<'_>,
+) -> OpResult {
+    health.set(Word::SensorStage, op.code().0);
+    let result = with_timeout(Duration::from_micros(op_timeout_us(op)), perform(op, scd, baro))
+        .await
+        .unwrap_or(OpResult::Failed(Fault::Timeout));
+    health.set(Word::SensorStage, OpCode::WAIT.0);
+    report_failure(op, &result);
+    result
+}
+
+fn op_timeout_us(op: Op) -> u64 {
+    u64::try_from(op.timeout().as_micros()).expect("operation timeouts are seconds")
+}
+
 #[embassy_executor::task]
 pub async fn sensor_loop(p: SensorPeripherals<'static>) {
     let SensorPeripherals {
@@ -352,135 +322,77 @@ pub async fn sensor_loop(p: SensorPeripherals<'static>) {
         spi_clk,
         spi_mosi,
         spi_miso,
-        spi_cs,
+        mut spi_cs,
         i2c0,
         i2c_sda,
         i2c_scl,
     } = p;
 
-    // --- init BMP390 ---
     let spi_bus = crate::spi_helper::init_spi_bus(BarometerArgs {
         spi2,
         clk: spi_clk,
         mosi: spi_mosi,
         miso: spi_miso,
     });
-    let mut barometer = get_barometer_spi(spi_bus, spi_cs).await;
-    if barometer.is_some() {
-        println!("BMP390: init ok");
-    } else {
-        set_status(SYS_NO_PERIPH);
-    }
 
-    // --- init SCD41 ---
     let i2c = I2c::new(i2c0, I2cConfig::default().with_frequency(Rate::from_khz(100)))
-        .unwrap()
+        .expect("the default I2C config at 100 kHz is valid")
         .with_sda(i2c_sda)
         .with_scl(i2c_scl)
         .into_async();
-
     let mut scd = Scd4x::new(i2c, Delay);
 
-    // остановить на случай если датчик уже измерял (после перезагрузки MCU)
-    let _ = scd.stop_periodic_measurement().await;
-    Timer::after(Duration::from_millis(500)).await;
+    let health = health();
+    let mut sensors = Sensors::new(uptime());
+    let mut ntp_ready = CLOCK_IS_SYNCED_WATCH
+        .receiver()
+        .expect("CLOCK_IS_SYNCED_WATCH has a receiver slot for the sensor task");
 
-    let serial = scd.serial_number().await;
-    match serial {
-        Ok(s) => println!("SCD41 serial: {:?}", s),
-        Err(e) => {
-            println!("SCD41: failed to read serial: {:?}, sensor not connected?", e);
-            set_status(SYS_NO_PERIPH);
-            return;
-        }
-    }
-
-    calibrate_temp_offset(&mut scd, barometer.as_mut()).await;
-
-    // --- проверяем ASC ---
-    match scd.get_automatic_self_calibration().await {
-        Ok(enabled) => println!("SCD41: ASC enabled={}", enabled),
-        Err(e) => println!("SCD41: ASC read error: {:?}", e),
-    }
-
-    // NTP-синк больше НЕ блокирует измерения: CO2/LED должны работать и без сети
-    // (комната без WiFi). Раньше sensor_loop висел на этом await навсегда, поэтому
-    // publish_co2 не вызывался, has_co2 в led_loop оставался false, и индикатор
-    // сваливался в безостановочный blink-цикл вместо штатного оверлея раз/мин.
-    // Флаг синка теперь читаем неблокирующе (try_get) — только чтобы не класть в
-    // серверный буфер показания с дефолтным (неверным) таймстампом до первого NTP.
-    let mut ntp_ready_receiver = CLOCK_IS_SYNCED_WATCH.receiver().unwrap();
-
-    // --- main loop ~30 сек ---
-    let mut last_pressure_hpa: Option<u16> = None;
+    // Сессии драйвера BMP390. Драйвер забирает SPI-устройство с CS по значению
+    // и при неудачной инициализации его не возвращает ⇒ инициализация берёт
+    // свежий `reborrow` CS, а её срок — одна итерация внешнего цикла: `BaroInit`
+    // закрывает сессию, следующая итерация создаёт драйвер заново.
+    let mut init_requested = false;
     loop {
-        // heartbeat для watchdog: доказывает что таска крутит свой цикл, а не
-        // зависла на I2C/SPI-await. Раз в ~30с.
-        crate::watchdog::beat_sensor();
-
-        // 1) читаем BMP390 если готов. Ошибку шины НЕ паникуем (было: .unwrap()
-        // → reset всего чипа на транзиенте SPI): пропускаем давление в этом
-        // цикле, сбой учитываем в SYS_NO_PERIPH в конце итерации.
-        let mut baro: Option<BaroSample> = None;
-        let mut baro_failed = false;
-        if let Some(ref mut barometer) = barometer {
-            match poll_barometer(barometer).await {
-                BaroPoll::Ready(reading) => {
-                    if let Some(pressure_hpa) = scd_ambient_pressure_hpa(reading.pressure) {
-                        last_pressure_hpa = Some(pressure_hpa);
-                    } else {
-                        println!(
-                            "BMP390: pressure {} Pa outside SCD4x compensation range (70000..=120000 Pa); keeping last valid pressure",
-                            reading.pressure
-                        );
-                    }
-                    println!("BMP390: P={:.1} T={:.2}", reading.pressure, reading.temp);
-                    baro = Some(reading);
+        let mut baro: Option<BarometerDevice<'_>> = None;
+        if init_requested {
+            health.set(Word::SensorStage, Op::BaroInit.code().0);
+            let result = match with_timeout(
+                Duration::from_micros(op_timeout_us(Op::BaroInit)),
+                init_barometer(spi_bus, spi_cs.reborrow()),
+            )
+            .await
+            {
+                Ok(Ok(device)) => {
+                    println!("BMP390: init ok");
+                    baro = Some(device);
+                    OpResult::Done
                 }
-                BaroPoll::NotReady => {} // не drdy — штатно, ждём следующий цикл
-                BaroPoll::Failed => baro_failed = true,
+                Ok(Err(fault)) => OpResult::Failed(fault),
+                Err(_) => OpResult::Failed(Fault::Timeout),
+            };
+            health.set(Word::SensorStage, OpCode::WAIT.0);
+            report_failure(Op::BaroInit, &result);
+            sensors.done(result, uptime(), &health);
+        }
+
+        // Единственный выход из цикла автомата — запрос `BaroInit`.
+        loop {
+            match sensors.next(uptime(), &health) {
+                Action::Run(Op::BaroInit) => break,
+                Action::Run(op) => {
+                    let result = run_op(op, &mut scd, baro.as_mut(), &health).await;
+                    sensors.done(result, uptime(), &health);
+                }
+                Action::Wait(until) => Timer::at(instant(until)).await,
+                Action::Cycle(cycle) => {
+                    // heartbeat для watchdog: цикл автомата ограничен по времени
+                    // при любом поведении шины (DST, инвариант 1).
+                    crate::watchdog::beat_sensor();
+                    finish_cycle(cycle, ntp_ready.try_get() == Some(true)).await;
+                }
             }
         }
-
-        // 2) скармливаем давление в SCD41 для компенсации CO2
-        if let Some(p_hpa) = last_pressure_hpa {
-            let _ = scd.set_ambient_pressure(p_hpa).await;
-        }
-
-        // 3) single-shot SCD41 → data_ready → чтение
-        let scd_reading = measure_scd(&mut scd).await;
-
-        // 4) CO2 для LED-таска — ВСЕГДА, даже без сети и без NTP-времени. Сбой
-        // SCD41 гасит показание: старое значение на LED выдавало бы мёртвый
-        // сенсор за живой.
-        match &scd_reading {
-            Some(s) => publish_co2(Ppm(s.co2)),
-            None => clear_co2(),
-        }
-
-        // 5) SYS_NO_PERIPH — ОДИН писатель, одно вычисление на итерацию. Раньше
-        // сбой BMP390 ставил бит, а успешное чтение SCD41 в той же итерации его
-        // снимало ⇒ сбой барометра на LED не был виден никогда.
-        if barometer.is_none() || baro_failed || scd_reading.is_none() {
-            set_status(SYS_NO_PERIPH);
-        } else {
-            clear_status(SYS_NO_PERIPH);
-        }
-
-        // 6) в серверный буфер кладём только с доверенным временем (после первого
-        // NTP-синка). try_get неблокирующий; once-synced остаётся Some(true) и при
-        // последующих кратких обрывах WiFi — буферизация продолжается. Холодный
-        // старт без WiFi → не засоряем очередь baked-in таймстампами.
-        // Показание без единого канала (оба датчика молчат) не кладём:
-        // строка из одного времени базе ничего не говорит.
-        if ntp_ready_receiver.try_get() == Some(true) {
-            let reading = to_reading(now_epoch(), baro.as_ref(), scd_reading.as_ref());
-            if reading.has_any_channel() {
-                enqueue_reading(reading).await;
-            }
-        }
-
-        // 7) спим оставшееся время до ~30 сек (уже потратили ~5 на SCD41)
-        Timer::after(Duration::from_secs(25)).await;
+        init_requested = true;
     }
 }
