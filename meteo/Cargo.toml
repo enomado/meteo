@@ -43,7 +43,8 @@ sntpc = { version = "0.11.0", default-features = false, features = [
 sntpc-net-embassy = { version = "0.11.0", default-features = false, features = [
   "defmt",
 ] }
-sntpc-time-embassy = { version = "0.6.0", default-features = false }
+# sntpc-time-embassy не берём: его часы — uptime как Unix-время, смещение от них
+# переполняется в 2038 (см. meteo_core::ntp). Часы — `meteo_core::ntp::BootClock`.
 
 embedded-nal = { version = "0.9.0" }
 embedded-io = { version = "0.7.1", features = [

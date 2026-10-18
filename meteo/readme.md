@@ -69,6 +69,13 @@ code. It checks that every reading is stored exactly as produced or counted
 as evicted from a full backlog, that no nonce repeats, and that the traffic
 per reading stays within budget.
 
+The NTP test runs the real `sntpc` client with the firmware clock against a
+simulated server through 2140, across the NTP era rollover (2036) and the
+2^31-second Unix mark (2038), with asymmetric network delays. It checks that
+every sync recovers the boot epoch within half the path asymmetry and that
+untrusted replies (Kiss-o'-Death, unsynchronized server, foreign source, stale
+origin, truncated packet, time before the firmware build) never move the clock.
+
 ## SPI Pinout (BMP390)
 
 | ESP32-C3 | Signal | Pin    |

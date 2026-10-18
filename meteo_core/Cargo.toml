@@ -32,6 +32,8 @@ serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 # Слова журнала здоровья: у прошивки они в RTC-памяти, а `Persistable` esp-hal
 # реализован для атомиков portable-atomic (на riscv32imc нет нативного CAS).
 portable-atomic = { version = "1.15.0", default-features = false }
+# Локальные часы NTP-клиента (`ntp::BootClock`) — генератор меток sntpc.
+sntpc = { version = "0.11.0", default-features = false }
 
 [dev-dependencies]
 # Тесты гоняют и сторону приёмника (DST: модель сервера — настоящий `server`).

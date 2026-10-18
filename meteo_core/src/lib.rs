@@ -8,6 +8,7 @@ pub mod codec;
 pub mod datagram;
 pub mod health;
 pub mod led_color;
+pub mod ntp;
 pub mod recv_window;
 pub mod sender;
 pub mod sensors;

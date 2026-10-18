@@ -21,19 +21,18 @@ use embassy_time::{
 };
 use esp_println::println;
 use meteo_core::health::Word;
+use meteo_core::ntp::{
+    BootClock,
+    SharedBootEpoch,
+};
 use meteo_core::supervisor::Uptime;
 use meteo_core::wire::EpochMillis;
-use portable_atomic::{
-    AtomicI64,
-    Ordering,
-};
 use sntpc::{
     NtpContext,
     NtpResult,
     get_time,
 };
 use sntpc_net_embassy::UdpSocketWrapper;
-use sntpc_time_embassy::EmbassyTimestampGenerator;
 
 use crate::watchdog::{
     health,
@@ -45,37 +44,23 @@ const NTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
 const NTP_RETRY_DELAY: Duration = Duration::from_secs(5);
 const NTP_RESYNC_INTERVAL: Duration = Duration::from_secs(1000);
 
-/// Смещение от локальных часов к системному времени, в микросекундах: так его отдаёт
-/// `NtpResult::offset()`, а `EmbassyTimestampGenerator` считает «системным
-/// временем» `Instant` с момента boot ⇒ offset соответствует UTC при запуске.
-/// Атомик (не `Mutex` + `unsafe lock_mut`): значение скалярное, читается из
-/// sensor-таски, пишется из ntp-таски.
-static CURRENT_OFFSET_US: AtomicI64 = AtomicI64::new(DEFAULT_OFFSET_US);
+/// Epoch момента boot: читается из sensor-таски, пишется из ntp-таски. До
+/// первого синка — `BootEpochMicros::BUILT_IN`; показания с таким временем в
+/// серверный буфер НЕ попадают (`sensor_loop` держит их по uptime и ставит время
+/// после `CLOCK_IS_SYNCED_WATCH`).
+static BOOT_EPOCH: SharedBootEpoch = SharedBootEpoch::new();
 
-/// Вшитое значение до первого успешного NTP-синка: 2025-09-16 01:31 UTC.
-/// Показания с таким временем в серверный буфер НЕ попадают (`sensor_loop`
-/// держит их по uptime и ставит время после `CLOCK_IS_SYNCED_WATCH`), оно нужно
-/// лишь чтобы часы вообще были монотонны.
-const DEFAULT_OFFSET_US: i64 = 1_757_986_271_840_363;
-
-/// Epoch момента `at` этой загрузки по текущему смещению. Смещение — epoch
-/// момента boot, поэтому момент из прошлого (цикл до синка) пересчитывается
-/// так же, как текущий.
+/// Epoch момента `at` этой загрузки. Хранится epoch момента boot, поэтому момент
+/// из прошлого (цикл до синка) пересчитывается так же, как текущий.
 pub fn epoch_at(at: Uptime) -> EpochMillis {
-    let since_boot_ms = u64::try_from(at.0.as_millis()).unwrap_or(u64::MAX);
-    let offset_ms = CURRENT_OFFSET_US.load(Ordering::Relaxed) / 1000;
-    EpochMillis(apply_offset(since_boot_ms, offset_ms))
+    BOOT_EPOCH.load().epoch_at(at)
 }
 
-const fn apply_offset(since_boot_ms: u64, offset_ms: i64) -> u64 {
-    if offset_ms >= 0 {
-        since_boot_ms.saturating_add(offset_ms.unsigned_abs())
-    } else {
-        since_boot_ms.saturating_sub(offset_ms.unsigned_abs())
-    }
-}
+/// Локальные часы sntpc — `BOOT_EPOCH` + uptime, а не голый uptime: смещение
+/// sntpc живёт в окне ±68 лет от них (см. `meteo_core::ntp`).
+type NtpClock = BootClock<fn() -> Uptime>;
 
-async fn ntp_sync(stack: Stack<'_>) -> Option<NtpResult> {
+async fn ntp_sync(stack: Stack<'_>, clock: NtpClock) -> Option<NtpResult> {
     // Create UDP socket
     let mut rx_meta = [PacketMetadata::EMPTY; 16];
     let mut rx_buffer = [0; 4096];
@@ -90,7 +75,7 @@ async fn ntp_sync(stack: Stack<'_>) -> Option<NtpResult> {
         return None;
     }
 
-    let context = NtpContext::new(EmbassyTimestampGenerator::default());
+    let context = NtpContext::new(clock);
 
     let ntp_addrs = match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
         Ok(addrs) => addrs,
@@ -128,11 +113,12 @@ async fn ntp_sync(stack: Stack<'_>) -> Option<NtpResult> {
 pub static CLOCK_IS_SYNCED_WATCH: Watch<CriticalSectionRawMutex, bool, 2> = Watch::new();
 // MultiWakerRegistration
 
-/// Одна попытка NTP-запроса с таймаутом. На успехе обновляет `CURRENT_OFFSET_US`.
+/// Одна попытка NTP-запроса с таймаутом. На успехе обновляет `BOOT_EPOCH`.
 async fn try_sync(stack: Stack<'_>) -> bool {
     println!("checking time");
 
-    let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack)).await else {
+    let clock: NtpClock = BootClock::new(BOOT_EPOCH.load(), uptime);
+    let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack, clock)).await else {
         println!("ntp: timeout!");
         health().bump(Word::NtpFailures);
         return false;
@@ -143,8 +129,18 @@ async fn try_sync(stack: Stack<'_>) -> bool {
         return false;
     };
 
-    CURRENT_OFFSET_US.store(pp.offset(), Ordering::Relaxed);
-    // Журнал ставит время сбоям по этому смещению (и восстановит время
+    match clock.synced(&pp) {
+        Ok(boot) => BOOT_EPOCH.store(boot),
+        Err(rejected) => {
+            println!(
+                "ntp: offset {} us puts boot before the firmware build, ignored",
+                rejected.claimed_offset_us
+            );
+            health().bump(Word::NtpFailures);
+            return false;
+        }
+    }
+    // Журнал ставит время сбоям по этому epoch (и восстановит время
     // зависания после reset).
     let now = uptime();
     health().clock_synced(now, epoch_at(now).0);
@@ -170,21 +166,5 @@ pub async fn ntp_sync_loop(stack: Stack<'static>) {
     loop {
         Timer::after(NTP_RESYNC_INTERVAL).await;
         let _ = try_sync(stack).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::apply_offset;
-
-    #[test]
-    fn applies_negative_offset_as_subtraction() {
-        assert_eq!(apply_offset(10_000, -250), 9_750);
-    }
-
-    #[test]
-    fn saturates_offsets_outside_epoch_range() {
-        assert_eq!(apply_offset(10, -11), 0);
-        assert_eq!(apply_offset(u64::MAX - 1, i64::MAX), u64::MAX);
     }
 }

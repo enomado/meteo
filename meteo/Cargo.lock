@@ -1689,7 +1689,6 @@ dependencies = [
  "portable-atomic",
  "sntpc",
  "sntpc-net-embassy",
- "sntpc-time-embassy",
  "static_cell",
  "toml",
 ]
@@ -1704,6 +1703,7 @@ dependencies = [
  "portable-atomic",
  "postcard",
  "serde",
+ "sntpc",
 ]
 
 [[package]]
@@ -2123,16 +2123,6 @@ dependencies = [
  "cfg-if",
  "defmt 1.1.1",
  "embassy-net",
- "sntpc",
-]
-
-[[package]]
-name = "sntpc-time-embassy"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "184c354de440d7b2e95a547eb16f2527a1eba1bb666f322782cdb4d4668fc66f"
-dependencies = [
- "embassy-time",
  "sntpc",
 ]
 
