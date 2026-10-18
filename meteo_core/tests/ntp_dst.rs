@@ -113,7 +113,8 @@ impl Path {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fault {
-    KissOfDeath,
+    /// Kiss-o'-Death с этим кодом в reference id.
+    KissOfDeath([u8; 4]),
     Unsynchronized,
     ForeignSource,
     StaleOrigin,
@@ -124,8 +125,11 @@ enum Fault {
     BeforeBuild,
 }
 
-const FAULTS: [Fault; 9] = [
-    Fault::KissOfDeath,
+// Коды KoD — те, на которые реагирует `ntp_kiss::KissMemory`.
+const FAULTS: [Fault; 11] = [
+    Fault::KissOfDeath(*b"RATE"),
+    Fault::KissOfDeath(*b"DENY"),
+    Fault::KissOfDeath(*b"RSTR"),
     Fault::Unsynchronized,
     Fault::ForeignSource,
     Fault::StaleOrigin,
@@ -186,7 +190,7 @@ impl SimSocket<'_> {
         let (mut origin, mut tx, mut len, mut source) = (origin, ntp_wire(t3), 48, SERVER);
         match self.fault {
             None | Some(Fault::BeforeBuild) => {}
-            Some(Fault::KissOfDeath) => (leap, stratum, ref_id) = (3, 0, *b"RATE"),
+            Some(Fault::KissOfDeath(code)) => (leap, stratum, ref_id) = (3, 0, code),
             Some(Fault::Unsynchronized) => leap = 3,
             Some(Fault::ForeignSource) => source = FOREIGN,
             // Опоздавший ответ на запрос предыдущей попытки (5 с назад).
@@ -395,7 +399,15 @@ fn untrusted_replies_do_not_move_the_clock() {
             let outcome = sync(&world, BootEpochMicros::BUILT_IN, path, Some(fault));
             let sntpc_error = |error| outcome == Err(Rejected::Sntpc(error));
             let rejected_as_expected = match fault {
-                Fault::KissOfDeath => sntpc_error(Error::KissOfDeath(KissOfDeathCode::Rate)),
+                Fault::KissOfDeath(code) => {
+                    let expected = match &code {
+                        b"RATE" => KissOfDeathCode::Rate,
+                        b"DENY" => KissOfDeathCode::Deny,
+                        b"RSTR" => KissOfDeathCode::Rstr,
+                        _ => unreachable!("FAULTS lists only these codes"),
+                    };
+                    sntpc_error(Error::KissOfDeath(expected))
+                }
                 Fault::Unsynchronized => sntpc_error(Error::UnsynchronizedClock),
                 Fault::ForeignSource => sntpc_error(Error::ResponseAddressMismatch),
                 Fault::StaleOrigin => sntpc_error(Error::IncorrectOriginTimestamp),

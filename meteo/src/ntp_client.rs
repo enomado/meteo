@@ -25,9 +25,11 @@ use meteo_core::ntp::{
     BootClock,
     SharedBootEpoch,
 };
+use meteo_core::ntp_kiss::KissMemory;
 use meteo_core::supervisor::Uptime;
 use meteo_core::wire::EpochMillis;
 use sntpc::{
+    Error,
     NtpContext,
     NtpResult,
     get_time,
@@ -60,7 +62,16 @@ pub fn epoch_at(at: Uptime) -> EpochMillis {
 /// sntpc живёт в окне ±68 лет от них (см. `meteo_core::ntp`).
 type NtpClock = BootClock<fn() -> Uptime>;
 
-async fn ntp_sync(stack: Stack<'_>, clock: NtpClock) -> Option<NtpResult> {
+/// Почему попытка синка не дала времени.
+enum NoTime {
+    /// Запрос не ушёл или ответ отвергнут — сбой.
+    Failed,
+    /// DNS выдал сервер, которому после Kiss-o'-Death слать нельзя; запроса не
+    /// было. Следующий DNS-запрос к пулу обычно даёт другой адрес.
+    Shunned,
+}
+
+async fn ntp_sync(stack: Stack<'_>, clock: NtpClock, kisses: &mut KissMemory) -> Result<NtpResult, NoTime> {
     // Create UDP socket
     let mut rx_meta = [PacketMetadata::EMPTY; 16];
     let mut rx_buffer = [0; 4096];
@@ -72,7 +83,7 @@ async fn ntp_sync(stack: Stack<'_>, clock: NtpClock) -> Option<NtpResult> {
     // некоторые провайдеры, а серверу он не нужен: ответ идёт на порт запроса.
     if let Err(error) = socket.bind(0) {
         println!("ntp: UDP bind failed: {:?}", error);
-        return None;
+        return Err(NoTime::Failed);
     }
 
     let context = NtpContext::new(clock);
@@ -81,16 +92,20 @@ async fn ntp_sync(stack: Stack<'_>, clock: NtpClock) -> Option<NtpResult> {
         Ok(addrs) => addrs,
         Err(error) => {
             println!("ntp: DNS query for {} failed: {:?}", NTP_SERVER, error);
-            return None;
+            return Err(NoTime::Failed);
         }
     };
 
     if ntp_addrs.is_empty() {
         println!("Failed to resolve DNS");
-        return None;
+        return Err(NoTime::Failed);
     }
 
     let addr: IpAddr = ntp_addrs[0].into();
+    if let Err(shunned) = kisses.admit(addr, uptime()) {
+        println!("ntp: {} skipped after its kiss-o'-death: {:?}", addr, shunned);
+        return Err(NoTime::Shunned);
+    }
     let sock_addr = SocketAddr::from((addr, 123));
 
     let wrapped = UdpSocketWrapper::from(socket);
@@ -98,35 +113,50 @@ async fn ntp_sync(stack: Stack<'_>, clock: NtpClock) -> Option<NtpResult> {
     println!("ntp: sending to {:?}", sock_addr);
     let result = get_time(sock_addr, &wrapped, context).await;
 
-    match &result {
+    match result {
         Ok(s) => {
             println!("ntp: ok, offset={}", s.offset());
+            Ok(s)
+        }
+        // RFC 5905 §7.4: на DENY/RSTR сервер бросить, на RATE отступить.
+        Err(Error::KissOfDeath(code)) => {
+            let shunned = kisses.kissed(addr, code, uptime());
+            println!(
+                "ntp: kiss-o'-death {} from {}: {:?}",
+                code.as_str(),
+                addr,
+                shunned
+            );
+            Err(NoTime::Failed)
         }
         Err(e) => {
             println!("ntp: error {:?}", e);
+            Err(NoTime::Failed)
         }
     }
-
-    result.ok()
 }
 
 pub static CLOCK_IS_SYNCED_WATCH: Watch<CriticalSectionRawMutex, bool, 2> = Watch::new();
 // MultiWakerRegistration
 
 /// Одна попытка NTP-запроса с таймаутом. На успехе обновляет `BOOT_EPOCH`.
-async fn try_sync(stack: Stack<'_>) -> bool {
+async fn try_sync(stack: Stack<'_>, kisses: &mut KissMemory) -> bool {
     println!("checking time");
 
     let clock: NtpClock = BootClock::new(BOOT_EPOCH.load(), uptime);
-    let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack, clock)).await else {
+    let Ok(res) = with_timeout(NTP_REQUEST_TIMEOUT, ntp_sync(stack, clock, kisses)).await else {
         println!("ntp: timeout!");
         health().bump(Word::NtpFailures);
         return false;
     };
 
-    let Some(pp) = res else {
-        health().bump(Word::NtpFailures);
-        return false;
+    let pp = match res {
+        Ok(pp) => pp,
+        Err(NoTime::Failed) => {
+            health().bump(Word::NtpFailures);
+            return false;
+        }
+        Err(NoTime::Shunned) => return false,
     };
 
     match clock.synced(&pp) {
@@ -153,11 +183,12 @@ pub async fn ntp_sync_loop(stack: Stack<'static>) {
     stack.wait_config_up().await;
 
     let flag_sender = CLOCK_IS_SYNCED_WATCH.sender();
+    let mut kisses = KissMemory::new();
 
     // До первого sync sensor_loop держит показания по uptime и ставит им время
     // по флагу CLOCK_IS_SYNCED_WATCH; пока не получится — ретрай каждые
-    // NTP_RETRY_DELAY.
-    while !try_sync(stack).await {
+    // NTP_RETRY_DELAY (серверу после KoD — не чаще, чем велит `kisses`).
+    while !try_sync(stack, &mut kisses).await {
         Timer::after(NTP_RETRY_DELAY).await;
     }
     flag_sender.send(true);
@@ -165,6 +196,6 @@ pub async fn ntp_sync_loop(stack: Stack<'static>) {
     // Подстройка — раз в NTP_RESYNC_INTERVAL, ошибки игнорим до следующей итерации.
     loop {
         Timer::after(NTP_RESYNC_INTERVAL).await;
-        let _ = try_sync(stack).await;
+        let _ = try_sync(stack, &mut kisses).await;
     }
 }
