@@ -149,7 +149,7 @@ impl Fuzz {
         usize::try_from(self.below(len as u64)).expect("index below a slice length fits usize")
     }
 
-    fn chance(&mut self, pct: u64) -> bool {
+    const fn chance(&mut self, pct: u64) -> bool {
         self.below(100) < pct
     }
 
