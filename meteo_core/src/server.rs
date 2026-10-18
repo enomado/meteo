@@ -115,8 +115,10 @@ impl Incoming<'_> {
 /// Порядок: внутри одной загрузки (`BootId`) поколение растёт ⇒ снимок не
 /// новее последнего — опоздавший дубль или перестановка, пропускаем. Новая
 /// загрузка принимается всегда (журнал переживает reset и продолжается).
-/// Подача питания обнуляет журнал: счётчик загрузок упал ⇒ сравнивать не с
-/// чем, изменения — все ненулевые поля.
+/// Подача питания обнуляет журнал. Продолженный журнал каждой новой загрузкой
+/// строго увеличивает `boot.total` ⇒ у новой загрузки он не вырос (в том числе
+/// 1 → 1 после двух подач питания подряд) — сравнивать не с чем, изменения —
+/// все ненулевые поля.
 #[derive(Debug, Default)]
 pub struct HealthLog {
     last: Option<(BootId, Snapshot)>,
@@ -142,7 +144,11 @@ impl HealthLog {
             Some((last_boot, last)) if *last_boot == boot && snapshot.generation() <= last.generation() => {
                 return None;
             }
-            Some((_, last)) if snapshot.get(Word::BootTotal) < last.get(Word::BootTotal) => None,
+            Some((last_boot, last))
+                if *last_boot != boot && snapshot.get(Word::BootTotal) <= last.get(Word::BootTotal) =>
+            {
+                None
+            }
             Some((_, last)) => Some(*last),
             None => None,
         };

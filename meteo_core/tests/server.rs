@@ -198,6 +198,13 @@ fn health_log_orders_snapshots_per_boot() {
     let power_on = log.accept(BootId(3), health_snapshot(1, 1, 0)).unwrap();
     assert_eq!(power_on.len(), 1);
     assert_eq!(power_on[0].to_string(), "boot.total +1 (=1)");
+
+    // Вторая подача питания подряд: `boot.total` не упал (1 → 1), но журнал
+    // обнулён — сравнение с прошлой загрузкой дало бы «+4294967293 (=0)».
+    log.accept(BootId(3), health_snapshot(2, 1, 3)).unwrap();
+    let power_on_again = log.accept(BootId(4), health_snapshot(1, 1, 0)).unwrap();
+    assert_eq!(power_on_again.len(), 1);
+    assert_eq!(power_on_again[0].to_string(), "boot.total +1 (=1)");
 }
 
 #[test]
