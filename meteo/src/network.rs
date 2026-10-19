@@ -34,6 +34,7 @@ use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{
     AuthenticationMethodConfig,
     Config,
+    ConnectionError,
     Interface,
     WifiController,
     WifiError,
@@ -56,6 +57,10 @@ use meteo_core::wifi_pick::{
     round_robin,
     strongest,
 };
+use meteo_core::wifi_retry::{
+    RETRY_PAUSE,
+    Reconnect,
+};
 use portable_atomic::{
     AtomicU32,
     Ordering,
@@ -77,6 +82,7 @@ use crate::watchdog::{
     health,
     uptime,
 };
+use crate::wifi_reason::reason_code;
 
 include!(concat!(env!("OUT_DIR"), "/constants.rs"));
 
@@ -204,10 +210,12 @@ async fn wait_for_disconnect_reason(controller: &WifiController<'static>) -> Res
     }
 }
 
+/// Когда повторять и когда поднимать `SYS_NO_WIFI` — `meteo_core::wifi_retry`.
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
     println!("start connection task");
     let mut attempt = 0usize;
+    let mut reconnect = Reconnect::new();
     loop {
         println!("About to connect...");
 
@@ -220,27 +228,44 @@ pub async fn connection(mut controller: WifiController<'static>) {
             println!("set_config({}) failed: {:?}", network.ssid, e);
         }
 
-        match controller.connect_async().await {
+        let pause = match controller.connect_async().await {
             Ok(info) => {
                 println!("Wifi connected to {:?}", info);
+                reconnect.on_connected();
                 clear_status(SYS_NO_WIFI);
                 let reason = wait_for_disconnect_reason(&controller).await;
                 set_status(SYS_NO_WIFI);
+                reconnect.on_dropped();
                 let health = health();
                 health.bump(Word::WifiDisconnects);
                 match reason {
                     Ok(reason) => health.set(Word::WifiLastReason, u32::from(reason)),
                     Err(e) => println!("Disconnected, reason unknown: {:?}", e),
                 }
+                RETRY_PAUSE
             }
             Err(e) => {
                 println!("Failed to connect to wifi: {:?}", e);
-                set_status(SYS_NO_WIFI);
-                health().bump(Word::WifiConnectFailures);
+                // Причина есть только у отказа точки доступа; `WifiError` —
+                // драйвер отказал, не дойдя до неё.
+                let reason = match e {
+                    ConnectionError::Failed(info) => reason_code(info.reason),
+                    _ => None,
+                };
+                let health = health();
+                health.bump(Word::WifiConnectFailures);
+                if let Some(reason) = reason {
+                    health.set(Word::WifiLastReason, u32::from(reason.0));
+                }
+                let verdict = reconnect.on_failed(reason);
+                if verdict.raise_status {
+                    set_status(SYS_NO_WIFI);
+                }
+                verdict.pause
             }
-        }
+        };
 
-        Timer::after(Duration::from_millis(5000)).await;
+        Timer::after(pause.try_into().expect("Wi-Fi retry pauses are seconds")).await;
     }
 }
 

@@ -17,3 +17,4 @@ pub mod sensors;
 pub mod server;
 pub mod supervisor;
 pub mod wifi_pick;
+pub mod wifi_retry;

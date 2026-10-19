@@ -139,7 +139,8 @@ words! {
 
     WifiDisconnects: Counter = "wifi.disconnects";
     WifiConnectFailures: Counter = "wifi.connect_failures";
-    /// Код причины последнего обрыва Wi-Fi от драйвера радио.
+    /// Код причины последнего обрыва или неудачного подключения Wi-Fi от
+    /// драйвера радио.
     WifiLastReason: Value = "wifi.last_reason";
     NtpFailures: Counter = "ntp.failures";
     /// Запрос подтверждения остался без ответа (таймаут или сбой отправки).
