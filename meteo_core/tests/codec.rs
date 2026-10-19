@@ -332,6 +332,11 @@ proptest! {
 
     #[test]
     fn decoder_never_panics(bytes in vec(any::<u8>(), 0..300)) {
-        let _ = decode_all(&bytes);
+        // Мусор складывается в любую запись, снимок здоровья тоже
+        // (`[0, 128, 0, …]`), поэтому проверяем сам декодер, а не
+        // `decode_all`, который ждёт одни показания.
+        if let Ok(records) = decode(&bytes) {
+            records.for_each(drop);
+        }
     }
 }
