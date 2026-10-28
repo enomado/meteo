@@ -61,7 +61,7 @@ pub const fn reason_code(reason: DisconnectReason) -> Option<ReasonCode> {
         DisconnectReason::InvalidMde => 50,
         DisconnectReason::InvalidFte => 51,
         DisconnectReason::TransmissionLinkEstablishmentFailed => 67,
-        DisconnectReason::AlterativeChannelOccupied => 68,
+        DisconnectReason::AlternativeChannelOccupied => 68,
         DisconnectReason::BeaconTimeout => 200,
         DisconnectReason::NoAccessPointFound => 201,
         DisconnectReason::AuthenticationFailed => 202,

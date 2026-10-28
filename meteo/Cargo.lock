@@ -937,6 +937,7 @@ dependencies = [
  "nb 1.1.0",
  "paste",
  "portable-atomic",
+ "portable_atomic_enum",
  "rand_core 0.10.1",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
@@ -1025,6 +1026,7 @@ dependencies = [
  "esp-wifi-sys-esp32c6",
  "esp-wifi-sys-esp32c61",
  "esp-wifi-sys-esp32h2",
+ "esp-wifi-sys-esp32h4",
  "esp-wifi-sys-esp32s2",
  "esp-wifi-sys-esp32s3",
  "esp-wifi-sys-esp32s31",
@@ -1106,7 +1108,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1114,7 +1116,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32c2"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1122,7 +1124,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32c3"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1130,7 +1132,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32c5"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1138,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32c6"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1146,7 +1148,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32c61"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1154,7 +1156,15 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32h2"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
+dependencies = [
+ "defmt 1.1.1",
+]
+
+[[package]]
+name = "esp-wifi-sys-esp32h4"
+version = "0.3.0"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1162,7 +1172,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32s2"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1170,7 +1180,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32s3"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1178,7 +1188,7 @@ dependencies = [
 [[package]]
 name = "esp-wifi-sys-esp32s31"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=a09ab97#a09ab9763539e528d7a836531a421826761c5649"
+source = "git+https://github.com/esp-rs/esp-wifi-sys.git?rev=5afc3a3#5afc3a38cc1abcd463e3b5140f0ac742de44053f"
 dependencies = [
  "defmt 1.1.1",
 ]
@@ -1186,7 +1196,7 @@ dependencies = [
 [[package]]
 name = "esp32"
 version = "0.42.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1195,7 +1205,7 @@ dependencies = [
 [[package]]
 name = "esp32c2"
 version = "0.31.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1204,7 +1214,7 @@ dependencies = [
 [[package]]
 name = "esp32c3"
 version = "0.34.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1213,7 +1223,7 @@ dependencies = [
 [[package]]
 name = "esp32c5"
 version = "0.4.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1222,7 +1232,7 @@ dependencies = [
 [[package]]
 name = "esp32c6"
 version = "0.25.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1231,7 +1241,7 @@ dependencies = [
 [[package]]
 name = "esp32c61"
 version = "0.5.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1240,7 +1250,7 @@ dependencies = [
 [[package]]
 name = "esp32h2"
 version = "0.21.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1249,7 +1259,7 @@ dependencies = [
 [[package]]
 name = "esp32h4"
 version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1258,7 +1268,7 @@ dependencies = [
 [[package]]
 name = "esp32p4"
 version = "0.4.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "critical-section",
  "defmt 0.3.101",
@@ -1268,7 +1278,7 @@ dependencies = [
 [[package]]
 name = "esp32s2"
 version = "0.33.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1277,7 +1287,7 @@ dependencies = [
 [[package]]
 name = "esp32s3"
 version = "0.37.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "defmt 1.1.1",
  "vcell",
@@ -1286,7 +1296,7 @@ dependencies = [
 [[package]]
 name = "esp32s31"
 version = "0.3.0"
-source = "git+https://github.com/esp-rs/esp-pacs.git?rev=33d9b66#33d9b665f3f9a36b21bf813e15e68d4ead6644f9"
+source = "git+https://github.com/esp-rs/esp-pacs.git?rev=5cb8c50#5cb8c50df887fb2653953dbc03a5f05dc07f11d3"
 dependencies = [
  "critical-section",
  "defmt 1.1.1",

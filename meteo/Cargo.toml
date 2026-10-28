@@ -170,9 +170,10 @@ pbkdf2 = "0.13.0"
 sha1 = "0.11.0"
 
 # Vendored local esp-hal as path patch (no extra commits — fork == upstream/main).
-# - synced to upstream/main `8ef1b671` (2026-10-18, crate versions unchanged),
+# - synced to upstream/main `5c0820cf9` (2026-10-28, crate versions unchanged),
 #   fast-forward of esp-hal branch `tmp/upstream-main-20260903`;
-#   prev syncs `686a3e6c` (2026-09-23, esp-radio 1.0.0-beta.0 → beta.2), `c9240a08` (2026-09-03, esp-hal 1.1.0 → 1.2.0, esp-rtos
+#   includes the FIFO SPI cancellation fix (esp-rs/esp-hal#6575, closes #6521).
+#   prev syncs `8ef1b671` (2026-10-18), `686a3e6c` (2026-09-23, esp-radio 1.0.0-beta.0 → beta.2), `c9240a08` (2026-09-03, esp-hal 1.1.0 → 1.2.0, esp-rtos
 #   0.3.0 → 0.4.0), `df161e61` (2026-06-16), `2294099a` (2026-05-22)
 # - kept as path patch for fast local hacks; PHY fix from prev fork is now in upstream
 [patch."https://github.com/esp-rs/esp-hal"]
